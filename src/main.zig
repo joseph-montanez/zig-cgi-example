@@ -42,7 +42,7 @@ fn handleUserPrefix(req: *http.Request, res: *http.Response, ctx_ptr: *anyopaque
     try ctx.client.ping();
 
     if (req.query.get("username")) |username| {
-        try res.writer().print("User Path: {s}\n", .{req.path[6..]});
+        try res.writer().print("User Path: {s}\n", .{username});
         if (req.query.get("foo")) |val| {
             try res.writer().print("foo = {s}\n", .{val});
         }
