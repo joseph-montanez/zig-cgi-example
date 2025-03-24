@@ -1,0 +1,6 @@
+src/config.zon
+.zig-cache/
+zig-out/
+build_and_deploy.ps1
+deploy.sh
+deploy.txt

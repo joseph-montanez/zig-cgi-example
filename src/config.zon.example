@@ -1,0 +1,7 @@
+.{
+    .username = "db_username",
+    .password = "db_password",
+    .database = "db_name",
+    .host = .{127, 0, 0, 1},
+    .port = 3306,
+}
