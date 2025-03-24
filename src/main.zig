@@ -37,6 +37,9 @@ fn handleAbout(_: *http.Request, res: *http.Response, _: *anyopaque) !void {
 fn handleUserPrefix(req: *http.Request, res: *http.Response, ctx_ptr: *anyopaque) !void {
     const ctx: *Context = @ptrCast(@alignCast(ctx_ptr));
 
+    // Database Connection
+    try ctx.client.ping();
+
     try res.writer().print("User Path: {s}\n", .{req.path[6..]});
     if (req.query.get("foo")) |val| {
         try res.writer().print("foo = {s}\n", .{val});
@@ -107,9 +110,6 @@ pub fn main() !void {
         },
     );
     defer client.deinit();
-
-    // Connection and Authentication
-    try client.ping();
 
     const method_str = http.getEnv("REQUEST_METHOD") orelse "";
     const path = http.getEnv("PATH_INFO") orelse "/";
