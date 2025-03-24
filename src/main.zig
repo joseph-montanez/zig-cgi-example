@@ -14,6 +14,7 @@ const Config = struct {
 const Context = struct {
     allocator: std.mem.Allocator,
     client: *Conn,
+    config: *const Config,
 };
 
 const Conn = myzql.conn.Conn;
@@ -40,32 +41,36 @@ fn handleUserPrefix(req: *http.Request, res: *http.Response, ctx_ptr: *anyopaque
     // Database Connection
     try ctx.client.ping();
 
-    try res.writer().print("User Path: {s}\n", .{req.path[6..]});
-    if (req.query.get("foo")) |val| {
-        try res.writer().print("foo = {s}\n", .{val});
-    }
+    if (req.query.get("username")) |username| {
+        try res.writer().print("User Path: {s}\n", .{req.path[6..]});
+        if (req.query.get("foo")) |val| {
+            try res.writer().print("foo = {s}\n", .{val});
+        }
 
-    const User = struct {
-        id: c_uint,
-        username: []const u8,
-        email: []const u8,
-        created_at: []const u8,
-    };
+        const User = struct {
+            id: c_uint,
+            username: []const u8,
+            email: []const u8,
+            created_at: []const u8,
+        };
 
-    const prep_res = try ctx.client.prepare(
-        ctx.allocator,
-        "SELECT id, username, email, DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') AS created_at FROM users WHERE username = ?",
-    );
-    defer prep_res.deinit(ctx.allocator);
-    const prep_stmt: PreparedStatement = try prep_res.expect(.stmt);
+        const prep_res = try ctx.client.prepare(
+            ctx.allocator,
+            "SELECT id, username, email, DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') AS created_at FROM users WHERE username = ?",
+        );
+        defer prep_res.deinit(ctx.allocator);
+        const prep_stmt: PreparedStatement = try prep_res.expect(.stmt);
 
-    const query_res = try ctx.client.executeRows(&prep_stmt, .{req.path[6..]});
-    const rows: ResultSet(BinaryResultRow) = try query_res.expect(.rows);
-    const rows_iter = rows.iter();
-    while (try rows_iter.next()) |row| {
-        var person: User = undefined;
-        try row.scan(&person);
-        try res.writer().print("Hello user id: {d} {s}\n", .{ person.id, person.created_at });
+        const query_res = try ctx.client.executeRows(&prep_stmt, .{username});
+        const rows: ResultSet(BinaryResultRow) = try query_res.expect(.rows);
+        const rows_iter = rows.iter();
+        while (try rows_iter.next()) |row| {
+            var user: User = undefined;
+            try row.scan(&user);
+            try res.writer().print("Hello user id: {d} {s}\n", .{ user.id, user.created_at });
+        }
+    } else {
+        try res.writer().print("No username specified\n", .{});
     }
 }
 
@@ -122,7 +127,7 @@ pub fn main() !void {
     defer res.buffer.deinit();
 
     var router = http.RouteSet{ .routes = route_list };
-    const ctx = Context{ .allocator = allocator, .client = &client };
+    const ctx = Context{ .allocator = allocator, .client = &client, .config = &config };
     var req = http.Request{ .method = method, .path = path, .query = query };
 
     if (!try router.handle(&req, &res, @constCast(&ctx))) {
