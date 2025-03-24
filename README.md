@@ -1,3 +1,22 @@
+# Zig CGI Example
+
+Its possible to run Zig on shared hosting. This must run as CGI or FastCGI, neither have implementations in Zig's core library like in Go, so you will need to write your own implementation. This project is the start of a CGI implementation / framework, it is not intented as a complete working example. If you are running any binary as CGI you normally cannot target **glibc**, so in Zig you can target **musl**. **LibC** is explictly disabled in Zig Build:
+
+```zig
+const exe = b.addExecutable(.{
+    .name = "zig_cgi",
+    .root_module = exe_mod,
+    .optimize = optimize,
+    .link_libc = false, // disabled
+    .strip = true,
+});
+```
+
+When you compile your application you will need to target musl:
+
+```bash
+zig build -Doptimize=Debug -Dtarget=x86_64-linux-musl
+```
 
 ## Database Information
 
@@ -115,5 +134,37 @@ fn handleUserPrefix(req: *http.Request, res: *http.Response, ctx_ptr: *anyopaque
     if (req.query.get("username")) |username| {
         try res.writer().print("User Path: {s}\n", .{username});
     }
+}
+```
+
+## Context
+
+In Zig there is comptime, this should be used but as a quick alternative you can use `anyopaque`. 
+
+```zig
+const Config = struct {
+    username: [:0]const u8,
+    password: [:0]const u8,
+    database: [:0]const u8,
+    host: [4]u8,
+    port: u16,
+};
+
+const Context = struct {
+    allocator: std.mem.Allocator,
+    client: *Conn,
+    config: *const Config,
+};
+
+
+fn handleUserPrefix(req: *http.Request, res: *http.Response, ctx_ptr: *anyopaque) !void {
+    // Cast anyopaque to your own custom context
+    const ctx: *Context = @ptrCast(@alignCast(ctx_ptr));
+    ctx.client....
+}
+
+
+pub fn main() !void {
+    const ctx = Context{ .allocator = allocator, .client = &client, .config = &config };
 }
 ```
