@@ -70,6 +70,10 @@
             .url = "https://github.com/speed2exe/myzql/archive/refs/tags/0.14.0.tar.gz",
             .hash = "N-V-__8AAOkFAwCuZ6d0XtibhdRX0TsmIyUyCdIT_GFSzanu",
         },
+        .ztl = .{
+            .url = "https://github.com/karlseguin/ztl/archive/refs/heads/master.tar.gz",
+            .hash = "ztl-0.0.0-XMYgXAjJBACjad2q-qlRgusVcp6aG69Nfg_LSx14_4wq",
+        },
     },
 
     // Specifies the set of files and directories that are included in this package.

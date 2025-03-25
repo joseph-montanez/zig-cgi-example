@@ -30,22 +30,56 @@ pub const Method = enum {
     }
 };
 
+pub const Header = struct {
+    key: []const u8,
+    value: []const u8,
+};
+
 pub const Response = struct {
+    status_code: u16 = 200,
     content_type: []const u8 = "text/plain",
+    headers: std.ArrayList(Header),
     buffer: std.ArrayList(u8),
 
     pub fn init(allocator: std.mem.Allocator) Response {
-        return .{ .buffer = std.ArrayList(u8).init(allocator) };
+        return .{
+            .headers = std.ArrayList(Header).init(allocator),
+            .buffer = std.ArrayList(u8).init(allocator),
+        };
+    }
+
+    pub fn deinit(self: Response) void {
+        self.headers.deinit();
+        self.buffer.deinit();
     }
 
     pub fn writer(self: *Response) @TypeOf(self.buffer.writer()) {
         return self.buffer.writer();
     }
 
+    pub fn setHeader(self: *Response, key: []const u8, value: []const u8) !void {
+        return self.headers.append(.{ .key = key, .value = value });
+    }
+
+    pub fn redirect(self: *Response, location: []const u8) !void {
+        try self.redirectWithCode(location, 302);
+    }
+
+    pub fn redirectWithCode(self: *Response, location: []const u8, status_code: u16) !void {
+        self.status_code = status_code;
+        try self.setHeader("Location", location);
+    }
+
     pub fn send(self: *Response) !void {
         const stdout = std.io.getStdOut().writer();
+        try stdout.print("Status: {d} \r\n", .{self.status_code});
+        for (self.headers.items) |header| {
+            try stdout.print("{s}: {s}\r\n", .{ header.key, header.value });
+        }
         try stdout.print("Zig: 0.14.0\r\n", .{});
-        try stdout.print("Content-Type: {s}\r\n\r\n", .{self.content_type});
+        try stdout.print("Content-Type: {s}\r\n", .{self.content_type});
+        try stdout.print("\r\n", .{});
+
         try stdout.writeAll(self.buffer.items);
     }
 };

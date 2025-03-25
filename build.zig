@@ -68,6 +68,10 @@ pub fn build(b: *std.Build) void {
         .strip = true,
     });
 
+    const ztl_dep = b.dependency("ztl", .{});
+    const ztl = ztl_dep.module("ztl");
+    exe.root_module.addImport("ztl", ztl);
+
     const myzql_dep = b.dependency("myzql", .{});
     const myzql = myzql_dep.module("myzql");
     exe.root_module.addImport("myzql", myzql);

@@ -1,5 +1,6 @@
 const std = @import("std");
 const myzql = @import("myzql");
+const ztl = @import("ztl");
 const config: Config = @import("config.zon");
 const http = @import("http.zig");
 
@@ -28,11 +29,59 @@ const TableStructs = myzql.result.TableStructs;
 const ResultSet = myzql.result.ResultSet;
 
 fn handleHome(_: *http.Request, res: *http.Response, _: *anyopaque) !void {
-    try res.writer().print("Home Page\n", .{});
+    const content = @embedFile("home.html");
+    res.content_type = "text/html";
+    try res.writer().print(content, .{});
 }
 
 fn handleAbout(_: *http.Request, res: *http.Response, _: *anyopaque) !void {
     try res.writer().print("About Page\n", .{});
+}
+
+fn handleRedirect(_: *http.Request, res: *http.Response, _: *anyopaque) !void {
+    try res.redirect("/about");
+}
+
+fn handleTemplate(_: *http.Request, res: *http.Response, ctx_ptr: *anyopaque) !void {
+    const ctx: *Context = @ptrCast(@alignCast(ctx_ptr));
+
+    const Product = struct {
+        name: []const u8,
+    };
+
+    var template = ztl.Template(void).init(ctx.allocator, {});
+    defer template.deinit();
+
+    var compile_error_report = ztl.CompileErrorReport{};
+
+    // The templating language is erb-inspired
+    template.compile(
+        \\ <h2>Products</h2>
+        \\ <% foreach (@products) |product| { -%>
+        \\     <%= escape product["name"] %>
+        \\ <% } %>
+    , .{ .error_report = &compile_error_report }) catch |err| {
+        try res.writer().print("{}\n", .{compile_error_report});
+        return err;
+    };
+
+    // Write to any writer, here we're using an ArrayList
+    var buf = std.ArrayList(u8).init(ctx.allocator);
+    defer buf.deinit();
+
+    var render_error_report = ztl.RenderErrorReport{};
+
+    // The render method is thread-safe.
+    template.render(buf.writer(), .{ .products = [_]Product{
+        .{ .name = "Keemun" },
+        .{ .name = "Silver Needle" },
+    } }, .{ .error_report = &render_error_report }) catch |err| {
+        defer render_error_report.deinit();
+        try res.writer().print("{}\n", .{render_error_report});
+        return err;
+    };
+
+    try res.writer().print("{s}\n", .{buf.items});
 }
 
 fn handleUserPrefix(req: *http.Request, res: *http.Response, ctx_ptr: *anyopaque) !void {
@@ -101,6 +150,8 @@ pub fn main() !void {
 
     try route_list.append(.{ .method = .GET, .path = "/", .handler = &handleHome });
     try route_list.append(.{ .method = .GET, .path = "/about", .handler = &handleAbout });
+    try route_list.append(.{ .method = .GET, .path = "/template", .handler = &handleTemplate });
+    try route_list.append(.{ .method = .GET, .path = "/redirect", .handler = &handleRedirect });
     try route_list.append(.{ .method = .GET, .path = "/user/:username", .handler = &handleUserPrefix });
     try route_list.append(.{ .method = .GET, .path = "/api", .handler = &handlePostApi });
 
@@ -124,7 +175,7 @@ pub fn main() !void {
     const query = try http.parseQuery(query_raw, allocator);
 
     var res = http.Response.init(allocator);
-    defer res.buffer.deinit();
+    defer res.deinit();
 
     var router = http.RouteSet{ .routes = route_list };
     const ctx = Context{ .allocator = allocator, .client = &client, .config = &config };
