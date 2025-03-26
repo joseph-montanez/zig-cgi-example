@@ -26,7 +26,7 @@ zig build -Doptimize=Debug -Dtarget=x86_64-linux-musl
         .username = "db_username",
         .password = "db_password",
         .database = "db_name",
-        .host = .{127, 0, 0, 1},
+        .host = "localhost",
         .port = 3306,
     }
 
@@ -94,6 +94,11 @@ All CGI need executable permissions so "0755". When you upload a new file you ne
     chmod +x deploy.sh
     zig build -Doptimize=Debug -Dtarget=x86_64-linux-musl && ./deploy.sh
 
+#### MacOS Watch Build
+
+    brew install entr
+    find src -name '*.zig' -o -name build.zig | entr -c zig build -Doptimize=Debug -Dtarget=aarch64-linux-musl
+
 ### Windows
 
 Download WinSCP: https://winscp.net/eng/index.php
@@ -146,7 +151,7 @@ const Config = struct {
     username: [:0]const u8,
     password: [:0]const u8,
     database: [:0]const u8,
-    host: [4]u8,
+    host: [:0]const u8,
     port: u16,
 };
 

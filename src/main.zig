@@ -8,14 +8,55 @@ const Config = struct {
     username: [:0]const u8,
     password: [:0]const u8,
     database: [:0]const u8,
-    host: [4]u8,
+    host: [:0]const u8,
     port: u16,
 };
 
 const Context = struct {
     allocator: std.mem.Allocator,
-    client: *Conn,
+    db: ?*Conn,
     config: *const Config,
+
+    fn getDb(self: *Context) !*Conn {
+        if (self.db) |conn| {
+            return conn;
+        }
+
+        // Perform DNS lookup
+        var address_list = try std.net.getAddressList(self.allocator, self.config.host, self.config.port);
+        defer address_list.deinit();
+
+        if (address_list.addrs.len == 0) {
+            std.debug.print("Error: Could not resolve hostname '{s}'\n", .{self.config.host});
+            return error.DNSNotFound;
+        }
+        const db_address = address_list.addrs[0];
+
+        const db_config = myzql.config.Config{
+            .username = self.config.username,
+            .password = self.config.password,
+            .database = self.config.database,
+            .address = db_address,
+        };
+
+        const client_ptr = try self.allocator.create(Conn);
+        errdefer self.allocator.destroy(client_ptr);
+
+        client_ptr.* = try Conn.init(self.allocator, &db_config);
+
+        try client_ptr.ping();
+
+        self.db = client_ptr;
+        return client_ptr;
+    }
+
+    fn deinit(self: *Context) void {
+        if (self.db_conn) |conn| {
+            conn.deinit();
+            self.allocator.destroy(conn);
+            self.db_conn = null;
+        }
+    }
 };
 
 const Conn = myzql.conn.Conn;
@@ -27,6 +68,24 @@ const QueryResult = myzql.result.QueryResult;
 const BinaryResultRow = myzql.result.BinaryResultRow;
 const TableStructs = myzql.result.TableStructs;
 const ResultSet = myzql.result.ResultSet;
+
+//-- Middlewares
+fn authMiddleware(req: *http.Request, res: *http.Response, ctx: *anyopaque) !bool {
+    _ = ctx; // Possibly use the context
+    const auth_header = req.headers.get("Authorization");
+    if (auth_header) |header| {
+        if (std.mem.eql(u8, header, "Bearer mysecrettoken")) {
+            return true;
+        }
+    }
+
+    // Authorization failed
+    res.status_code = 401;
+    try res.writer().print("Unauthorized\n", .{});
+    return false;
+}
+
+//-- Route Handlers
 
 fn handleHome(_: *http.Request, res: *http.Response, _: *anyopaque) !void {
     const content = @embedFile("home.html");
@@ -88,12 +147,14 @@ fn handleUserPrefix(req: *http.Request, res: *http.Response, ctx_ptr: *anyopaque
     const ctx: *Context = @ptrCast(@alignCast(ctx_ptr));
 
     // Database Connection
-    try ctx.client.ping();
+    const db = try ctx.getDb();
 
     if (req.query.get("username")) |username| {
         try res.writer().print("User Path: {s}\n", .{username});
         if (req.query.get("foo")) |val| {
             try res.writer().print("foo = {s}\n", .{val});
+        } else {
+            try res.writer().print("`foo` parameter not found\n", .{});
         }
 
         const User = struct {
@@ -103,14 +164,14 @@ fn handleUserPrefix(req: *http.Request, res: *http.Response, ctx_ptr: *anyopaque
             created_at: []const u8,
         };
 
-        const prep_res = try ctx.client.prepare(
+        const prep_res = try db.prepare(
             ctx.allocator,
             "SELECT id, username, email, DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') AS created_at FROM users WHERE username = ?",
         );
         defer prep_res.deinit(ctx.allocator);
         const prep_stmt: PreparedStatement = try prep_res.expect(.stmt);
 
-        const query_res = try ctx.client.executeRows(&prep_stmt, .{username});
+        const query_res = try db.executeRows(&prep_stmt, .{username});
         const rows: ResultSet(BinaryResultRow) = try query_res.expect(.rows);
         const rows_iter = rows.iter();
         while (try rows_iter.next()) |row| {
@@ -140,32 +201,31 @@ fn handlePostApi(_: *http.Request, res: *http.Response, _: *anyopaque) !void {
 }
 
 pub fn main() !void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const gpa_allocator = gpa.allocator();
+    defer _ = gpa.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(gpa_allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
     //-- Routes
-    var route_list = std.ArrayList(http.Route).init(std.heap.page_allocator);
+    var route_list = std.ArrayList(http.Route).init(allocator);
     defer route_list.deinit();
 
-    try route_list.append(.{ .method = .GET, .path = "/", .handler = &handleHome });
-    try route_list.append(.{ .method = .GET, .path = "/about", .handler = &handleAbout });
-    try route_list.append(.{ .method = .GET, .path = "/template", .handler = &handleTemplate });
-    try route_list.append(.{ .method = .GET, .path = "/redirect", .handler = &handleRedirect });
-    try route_list.append(.{ .method = .GET, .path = "/user/:username", .handler = &handleUserPrefix });
-    try route_list.append(.{ .method = .GET, .path = "/api", .handler = &handlePostApi });
+    var no_middleware = std.ArrayList(http.Middleware).init(allocator);
+    defer no_middleware.deinit();
 
-    //-- Database
-    var client = try Conn.init(
-        allocator,
-        &.{
-            .username = config.username,
-            .password = config.password,
-            .database = config.database,
-            .address = std.net.Address.initIp4(config.host, config.port),
-        },
-    );
-    defer client.deinit();
+    var auth_middleware = std.ArrayList(http.Middleware).init(allocator);
+    try auth_middleware.append(&authMiddleware);
+    defer auth_middleware.deinit();
+
+    try route_list.append(.{ .method = .GET, .path = "/", .handler = &handleHome, .middleware = no_middleware});
+    try route_list.append(.{ .method = .GET, .path = "/about", .handler = &handleAbout, .middleware = no_middleware });
+    try route_list.append(.{ .method = .GET, .path = "/template", .handler = &handleTemplate, .middleware = no_middleware });
+    try route_list.append(.{ .method = .GET, .path = "/redirect", .handler = &handleRedirect, .middleware = no_middleware });
+    try route_list.append(.{ .method = .GET, .path = "/user/:username", .handler = &handleUserPrefix, .middleware = no_middleware });
+    try route_list.append(.{ .method = .GET, .path = "/api", .handler = &handlePostApi, .middleware = no_middleware });
 
     const method_str = http.getEnv("REQUEST_METHOD") orelse "";
     const path = http.getEnv("PATH_INFO") orelse "/";
@@ -173,13 +233,14 @@ pub fn main() !void {
 
     const method = http.Method.fromStr(method_str);
     const query = try http.parseQuery(query_raw, allocator);
+    const headers = try http.parseCgiHeaders(allocator);
 
     var res = http.Response.init(allocator);
     defer res.deinit();
 
     var router = http.RouteSet{ .routes = route_list };
-    const ctx = Context{ .allocator = allocator, .client = &client, .config = &config };
-    var req = http.Request{ .method = method, .path = path, .query = query };
+    const ctx = Context{ .allocator = allocator, .db = null, .config = &config };
+    var req = http.Request{ .method = method, .path = path, .query = query, .headers = headers };
 
     if (!try router.handle(&req, &res, @constCast(&ctx))) {
         try res.writer().print("404 Not Found: {s}\n", .{path});
