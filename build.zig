@@ -4,6 +4,9 @@ const std = @import("std");
 // declaratively construct a build graph that will be executed by an external
 // runner.
 pub fn build(b: *std.Build) void {
+    const no_bin = b.option(bool, "no-bin", "skip emitting binary") orelse false;
+
+
     // Standard target options allows the person running `zig build` to choose
     // what target to build for. Here we do not override the defaults, which
     // means any target is allowed, and the default is native. Other options
@@ -67,6 +70,12 @@ pub fn build(b: *std.Build) void {
         .link_libc = false,
         .strip = true,
     });
+
+    if (no_bin) {
+        b.getInstallStep().dependOn(&exe.step);
+    } else {
+        b.installArtifact(exe);
+    }
 
     const ztl_dep = b.dependency("ztl", .{});
     const ztl = ztl_dep.module("ztl");
