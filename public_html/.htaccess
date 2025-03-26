@@ -1,0 +1,21 @@
+Options +ExecCGI
+AddHandler cgi-script .cgi
+DirectoryIndex index.cgi
+
+RewriteEngine On
+RewriteBase /
+
+# Skip real files and dirs
+RewriteCond %{REQUEST_FILENAME} -f [OR]
+RewriteCond %{REQUEST_FILENAME} -d
+RewriteRule ^ - [L]
+
+# Don't rewrite already rewritten requests
+RewriteCond %{REQUEST_URI} ^/index.cgi
+RewriteRule ^ - [L]
+
+# Route root
+RewriteRule ^$ index.cgi [QSA,L]
+
+# Route everything else
+RewriteRule ^(.*)$ index.cgi/$1 [QSA,L]

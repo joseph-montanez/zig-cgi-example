@@ -6,3 +6,4 @@ deploy.sh
 deploy.txt
 src/config.live.zon
 src/config.local.zon
+public_html/index.cgi
