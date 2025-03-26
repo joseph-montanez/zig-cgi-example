@@ -1,0 +1,29 @@
+services:
+  apache:
+    image: httpd:2.4
+    container_name: apache
+    ports:
+      - "8088:80"
+    volumes:
+      - ./public_html:/var/www/html
+      - ./zig-out/bin/zig_cgi:/var/www/html/index.cgi
+      - ./docker/apache/conf/httpd.conf:/usr/local/apache2/conf/httpd.conf
+    depends_on:
+      - mariadb
+
+  mariadb:
+    image: mariadb:10.5.27
+    container_name: mariadb
+    environment:
+      MARIADB_ROOT_PASSWORD: root
+      MARIADB_DATABASE: db_name
+      MARIADB_USER: db_username
+      MARIADB_PASSWORD: db_password
+    ports:
+      - "8306:3306"
+    volumes:
+      - ./docker/mariadb/database.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - zdb_data:/var/lib/mysql
+
+volumes:
+  zdb_data:
