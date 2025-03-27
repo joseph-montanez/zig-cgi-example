@@ -156,46 +156,23 @@ fn sessionMiddleware(req: *const http.Request, _: *http.Response, ctx_ptr: *anyo
         if (load_result) |maybe_session| {
             // Success path
             loaded_session = maybe_session;
-            if (loaded_session) |s| { // Check if load returned null (e.g. file not found)
+            if (loaded_session) |s| {
                  std.debug.print("Middleware loaded session: {s}\n", .{s.id});
             } else {
                  std.debug.print("Middleware: Load returned null (e.g., file not found), will create new.\n", .{});
-                 // loaded_session is already null
             }
         } else |err| {
-            // Error path - inspect the error
             switch (err) {
-                // Non-critical errors: log and do nothing (loaded_session remains null)
                 error.SessionFileOpenFailed,
                 error.SessionFileReadFailed,
                 error.SessionPathAllocationFailed,
                 error.SessionDataAllocationFailed
                  => {
                     std.debug.print("Non-critical session load error ({s}), proceeding to create new. Err: {any}\n", .{ session_id_from_cookie, err });
-                    // loaded_session remains null
                 },
-                // Critical errors: propagate out of sessionMiddleware
                 else => return err,
             }
         }
-
-        //loaded_session = session.Session(SessionData).load(allocator, session_id_from_cookie) catch |err| switch (err) {
-        //    // Non-critical load errors: log and proceed to create new
-        //    error.SessionFileOpenFailed, error.SessionFileReadFailed,
-        //    error.SessionPathAllocationFailed, error.SessionDataAllocationFailed
-        //     => {
-        //        std.debug.print("Failed to load session ({s}), creating new. Err: {any}\n", .{ session_id_from_cookie, err });
-        //        return true; // Ensure we proceed to create new
-        //    },
-        //    // More critical errors (e.g., OOM during load itself) - propagate
-        //    else => |e| return e,
-        //};
-        //
-        //if (loaded_session) {
-        //     std.debug.print("Middleware loaded session: {s}\n", .{loaded_session.?.id});
-        //} else {
-        //     std.debug.print("Middleware found session ID {s}, but file invalid/missing. Will create new.\n", .{session_id_from_cookie});
-        //}
     }
 
     if (loaded_session == null) {

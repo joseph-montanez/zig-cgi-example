@@ -15,12 +15,12 @@ const exe = b.addExecutable(.{
 When you compile your application you will need to target musl:
 
 ```bash
-zig build -Doptimize=Debug -Dtarget=x86_64-linux-musl
+zig build -Doptimize=Debug -Dtarget=x86_64-linux-musl -Ddeployment=prod
 ```
 
 ## Database Information
 
-`src/config.zon.example` needs to be renamed to `src/config.zon`. Zon is like JSON but is at compile time imported. This can be changed to a runtime import, but you need to make code changes for that. This is new as of *Zig 0.14*
+`src/config.zon.example` needs to be renamed to `src/config.prod.zon` and `src/config.local.zon`. Zon is like JSON but is at compile time imported. This can be changed to a runtime import, but you need to make code changes for that. This is new as of *Zig 0.14*
 
     .{
         .username = "db_username",
@@ -171,5 +171,37 @@ fn handleUserPrefix(req: *http.Request, res: *http.Response, ctx_ptr: *anyopaque
 
 pub fn main() !void {
     const ctx = Context{ .allocator = allocator, .client = &client, .config = &config };
+}
+```
+
+## Middleware
+
+Middleware can be added to load in sessions, authorize routes, enable CORS, etc. As long as the middleware returns true, it will process all middleware in the order provided. If you return false, no other middleware is execute, and the route is rejected.
+
+```zig
+fn authMiddleware(req: *http.Request, res: *http.Response, ctx: *anyopaque) !bool {
+    _ = ctx; // Possibly use the context
+    const auth_header = req.headers.get("Authorization");
+    if (auth_header) |header| {
+        if (std.mem.eql(u8, header, "Bearer mysecrettoken")) {
+            return true;
+        }
+    }
+
+    // Authorization failed
+    res.status_code = .unauthorized;
+    try res.writer().print("Unauthorized\n", .{});
+    
+    // Reject the other middleware/route
+    return false;
+}
+
+pub fn main() !void {
+    var auth_middleware = std.ArrayList(http.Middleware).init(allocator);
+    try auth_middleware.append(&authMiddleware);
+    defer auth_middleware.deinit();
+
+    try route_list.append(.{ .method = .GET, .path = "/user/tasks", .handler = &register.handleUserTaskGet, .middleware = auth_middleware });
+    try route_list.append(.{ .method = .POST, .path = "/user/tasks", .handler = &register.handleUserTaskPost, .middleware = auth_middleware });
 }
 ```
