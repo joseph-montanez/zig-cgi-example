@@ -1,29 +1,6 @@
 const std = @import("std");
 const myzql = @import("myzql");
 
-pub const Method = enum {
-    GET,
-    POST,
-    PUT,
-    PATCH,
-    DELETE,
-    UNKNOWN,
-
-    pub fn fromStr(s: []const u8) Method {
-        return if (std.mem.eql(u8, s, "GET")) {
-            return .GET;
-        } else if (std.mem.eql(u8, s, "POST")) {
-            return .POST;
-        } else if (std.mem.eql(u8, s, "PUT")) {
-            return .PUT;
-        } else if (std.mem.eql(u8, s, "PATCH")) {
-            return .PATCH;
-        } else if (std.mem.eql(u8, s, "DELETE")) {
-            return .DELETE;
-        } else .UNKNOWN;
-    }
-};
-
 pub const Header = struct {
     key: []const u8,
     value: []const u8,
@@ -78,14 +55,16 @@ pub const Headers = struct {
 };
 
 pub const Request = struct {
-    method: Method,
+    method: std.http.Method,
     path: []const u8,
     headers: Headers,
+    cookies: std.StringHashMap([]const u8),
     query: std.StringHashMap([]const u8),
+    body: std.StringHashMap([]const u8),
 };
 
 pub const Response = struct {
-    status_code: u16 = 200,
+    status_code: std.http.Status = std.http.Status.ok,
     content_type: []const u8 = "text/plain",
     headers: Headers,
     buffer: std.ArrayList(u8),
@@ -111,10 +90,10 @@ pub const Response = struct {
     }
 
     pub fn redirect(self: *Response, location: []const u8) !void {
-        try self.redirectWithCode(location, 302);
+        try self.redirectWithCode(location, .temporary_redirect);
     }
 
-    pub fn redirectWithCode(self: *Response, location: []const u8, status_code: u16) !void {
+    pub fn redirectWithCode(self: *Response, location: []const u8, status_code: std.http.Status) !void {
         self.status_code = status_code;
         try self.setHeader("Location", location);
     }
@@ -136,7 +115,7 @@ pub const Response = struct {
 pub const Middleware = *const fn (*Request, *Response, *anyopaque) anyerror!bool;
 
 pub const Route = struct {
-    method: Method,
+    method: std.http.Method,
     path: []const u8,
     handler: *const fn (*Request, *Response, *anyopaque) anyerror!void,
     middleware: std.ArrayList(Middleware),
@@ -299,4 +278,20 @@ pub fn parseCgiHeaders(allocator: std.mem.Allocator) !Headers {
     }
 
     return headers;
+}
+
+pub fn parseCookie(cookies: *std.StringHashMap([]const u8), cookie_header: []const u8) !void {
+    var cookie_iter = std.mem.tokenizeSequence(u8, cookie_header, "; ");
+
+    while (cookie_iter.next()) |cookie| {
+        const trimmed_cookie = std.mem.trim(u8, cookie, " ");
+
+        const equals_index = std.mem.indexOf(u8, trimmed_cookie, "=");
+        if (equals_index) |index| {
+            const cookie_name = trimmed_cookie[0..index];
+            const cookie_value = trimmed_cookie[index + 1 ..];
+
+            try cookies.put(cookie_name, cookie_value);
+        }
+    }
 }
