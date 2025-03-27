@@ -5,7 +5,22 @@ const std = @import("std");
 // runner.
 pub fn build(b: *std.Build) void {
     const no_bin = b.option(bool, "no-bin", "skip emitting binary") orelse false;
+    const deployment_str = b.option([]const u8, "deployment", "Deployment target (dev, prod, stage, local)") orelse "local";
 
+    const deployment_int: c_int = blk: {
+        if (std.mem.eql(u8, deployment_str, "prod")) {
+            break :blk 1;
+        } else if (std.mem.eql(u8, deployment_str, "dev")) {
+            break :blk 2;
+        } else if (std.mem.eql(u8, deployment_str, "stage")) {
+            break :blk 3;
+        } else if (std.mem.eql(u8, deployment_str, "local")) {
+            break :blk 0;
+        } else {
+            std.log.warn("Unknown deployment target '{s}'. Defaulting to local (0).", .{deployment_str});
+            break :blk 0;
+        }
+    };
 
     // Standard target options allows the person running `zig build` to choose
     // what target to build for. Here we do not override the defaults, which
@@ -84,6 +99,14 @@ pub fn build(b: *std.Build) void {
     const myzql_dep = b.dependency("myzql", .{});
     const myzql = myzql_dep.module("myzql");
     exe.root_module.addImport("myzql", myzql);
+
+    const config: *std.Build.Step.ConfigHeader = b.addConfigHeader(.{
+        .include_path = "config.h",
+    }, .{
+        .DEPLOYMENT = deployment_int,
+    });
+
+    exe.addConfigHeader(config);
 
     // This declares intent for the executable to be installed into the
     // standard location when the user invokes the "install" step (the default
