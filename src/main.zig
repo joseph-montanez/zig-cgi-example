@@ -1,10 +1,29 @@
 const std = @import("std");
+// Third Party
 const myzql = @import("myzql");
+const Conn = myzql.conn.Conn;
+const ResultRow = myzql.result.ResultRow;
+const TableTexts = myzql.result.TableTexts;
+const TextElemIter = myzql.result.TextElemIter;
+const PreparedStatement = myzql.result.PreparedStatement;
+const QueryResult = myzql.result.QueryResult;
+const BinaryResultRow = myzql.result.BinaryResultRow;
+const TableStructs = myzql.result.TableStructs;
+const ResultSet = myzql.result.ResultSet;
 const ztl = @import("ztl");
-const config: Config = @import("config.zon");
-const http = @import("http.zig");
 
-const Config = struct {
+const http = @import("http.zig");
+const session = @import("session.zig");
+// Pages
+const register = @import("pages/auth/register.zig");
+const userIndex = @import("pages/user/index.zig");
+
+// Configuration
+const buildConfig = @cImport({
+    @cInclude("config.h");
+});
+
+pub const Config = struct {
     username: [:0]const u8,
     password: [:0]const u8,
     database: [:0]const u8,
@@ -12,12 +31,36 @@ const Config = struct {
     port: u16,
 };
 
-const Context = struct {
+const config: Config = switch (buildConfig.DEPLOYMENT) {
+    1 => @import("config.prod.zon"), // Matches prod = 1
+    //2 => @import("config.dev.zon"),   // Matches dev = 2
+    //3 => @import("config.stage.zon"), // Matches stage = 3
+    0 => @import("config.local.zon"), // Matches local = 0
+    else => {
+        @compileError("Unknown integer value for DEPLOYMENT in config.h");
+        // Or default: @import("config.default.zon"),
+    },
+};
+
+pub const SessionData = struct {
+    user_id: ?u64
+};
+
+
+pub const ContextError = error{
+    SessionNotInitialized, // If middleware didn't run or failed silently
+    DBConnectionFailed,
+    DNSNotFound, // From getDb
+    // Add other context-specific errors if needed
+};
+
+pub const Context = struct {
     allocator: std.mem.Allocator,
     db: ?*Conn,
     config: *const Config,
+    session: ?*session.Session(SessionData) = null,
 
-    fn getDb(self: *Context) !*Conn {
+    pub fn getDb(self: *Context) !*Conn {
         if (self.db) |conn| {
             return conn;
         }
@@ -50,24 +93,29 @@ const Context = struct {
         return client_ptr;
     }
 
-    fn deinit(self: *Context) void {
-        if (self.db_conn) |conn| {
+    pub fn getSession(self: *Context) !*session.Session {
+        // Assumes middleware has successfully run and populated self.session
+        return self.session orelse ContextError.SessionNotInitialized;
+    }
+
+    pub fn saveSession(self: *Context) !void {
+        if (self.session) |s| {
+            try s.save();
+        }
+    }
+
+
+    pub fn deinit(self: *const Context) void {
+        if (self.db) |conn| {
             conn.deinit();
             self.allocator.destroy(conn);
-            self.db_conn = null;
+        }
+        if (self.session) |s| {
+             s.deinit();
+             self.allocator.destroy(s);
         }
     }
 };
-
-const Conn = myzql.conn.Conn;
-const ResultRow = myzql.result.ResultRow;
-const TableTexts = myzql.result.TableTexts;
-const TextElemIter = myzql.result.TextElemIter;
-const PreparedStatement = myzql.result.PreparedStatement;
-const QueryResult = myzql.result.QueryResult;
-const BinaryResultRow = myzql.result.BinaryResultRow;
-const TableStructs = myzql.result.TableStructs;
-const ResultSet = myzql.result.ResultSet;
 
 //-- Middlewares
 fn authMiddleware(req: *http.Request, res: *http.Response, ctx: *anyopaque) !bool {
@@ -80,13 +128,87 @@ fn authMiddleware(req: *http.Request, res: *http.Response, ctx: *anyopaque) !boo
     }
 
     // Authorization failed
-    res.status_code = 401;
+    res.status_code = .unauthorized;
     try res.writer().print("Unauthorized\n", .{});
     return false;
 }
 
-//-- Route Handlers
+fn sessionMiddleware(req: *const http.Request, _: *http.Response, ctx_ptr: *anyopaque) !bool {
+    const ctx: *Context = @ptrCast(@alignCast(ctx_ptr));
 
+    // If session already loaded (e.g., by another middleware), do nothing
+    if (ctx.session != null) {
+        return true;
+    }
+
+    var loaded_session: ?*session.Session(SessionData) = null;
+    const allocator = ctx.allocator;
+
+    // Ensure cleanup if subsequent steps fail after potential allocation
+    errdefer if (loaded_session) |s| {
+        s.deinit();
+        allocator.destroy(s);
+    };
+
+    if (req.cookies.get(session.SESSION_COOKIE_NAME)) |session_id_from_cookie| {
+        const load_result = session.Session(SessionData).load(allocator, session_id_from_cookie);
+
+        if (load_result) |maybe_session| {
+            // Success path
+            loaded_session = maybe_session;
+            if (loaded_session) |s| { // Check if load returned null (e.g. file not found)
+                 std.debug.print("Middleware loaded session: {s}\n", .{s.id});
+            } else {
+                 std.debug.print("Middleware: Load returned null (e.g., file not found), will create new.\n", .{});
+                 // loaded_session is already null
+            }
+        } else |err| {
+            // Error path - inspect the error
+            switch (err) {
+                // Non-critical errors: log and do nothing (loaded_session remains null)
+                error.SessionFileOpenFailed,
+                error.SessionFileReadFailed,
+                error.SessionPathAllocationFailed,
+                error.SessionDataAllocationFailed
+                 => {
+                    std.debug.print("Non-critical session load error ({s}), proceeding to create new. Err: {any}\n", .{ session_id_from_cookie, err });
+                    // loaded_session remains null
+                },
+                // Critical errors: propagate out of sessionMiddleware
+                else => return err,
+            }
+        }
+
+        //loaded_session = session.Session(SessionData).load(allocator, session_id_from_cookie) catch |err| switch (err) {
+        //    // Non-critical load errors: log and proceed to create new
+        //    error.SessionFileOpenFailed, error.SessionFileReadFailed,
+        //    error.SessionPathAllocationFailed, error.SessionDataAllocationFailed
+        //     => {
+        //        std.debug.print("Failed to load session ({s}), creating new. Err: {any}\n", .{ session_id_from_cookie, err });
+        //        return true; // Ensure we proceed to create new
+        //    },
+        //    // More critical errors (e.g., OOM during load itself) - propagate
+        //    else => |e| return e,
+        //};
+        //
+        //if (loaded_session) {
+        //     std.debug.print("Middleware loaded session: {s}\n", .{loaded_session.?.id});
+        //} else {
+        //     std.debug.print("Middleware found session ID {s}, but file invalid/missing. Will create new.\n", .{session_id_from_cookie});
+        //}
+    }
+
+    if (loaded_session == null) {
+        loaded_session = try session.Session(SessionData).createNew(allocator);
+         std.debug.print("Middleware created new session: {s}\n", .{loaded_session.?.id});
+    }
+
+    ctx.session = loaded_session;
+
+    return true;
+}
+
+//-- Route Handlers
 fn handleHome(_: *http.Request, res: *http.Response, _: *anyopaque) !void {
     const content = @embedFile("home.html");
     res.content_type = "text/html";
@@ -143,46 +265,6 @@ fn handleTemplate(_: *http.Request, res: *http.Response, ctx_ptr: *anyopaque) !v
     try res.writer().print("{s}\n", .{buf.items});
 }
 
-fn handleUserPrefix(req: *http.Request, res: *http.Response, ctx_ptr: *anyopaque) !void {
-    const ctx: *Context = @ptrCast(@alignCast(ctx_ptr));
-
-    // Database Connection
-    const db = try ctx.getDb();
-
-    if (req.query.get("username")) |username| {
-        try res.writer().print("User Path: {s}\n", .{username});
-        if (req.query.get("foo")) |val| {
-            try res.writer().print("foo = {s}\n", .{val});
-        } else {
-            try res.writer().print("`foo` parameter not found\n", .{});
-        }
-
-        const User = struct {
-            id: c_uint,
-            username: []const u8,
-            email: []const u8,
-            created_at: []const u8,
-        };
-
-        const prep_res = try db.prepare(
-            ctx.allocator,
-            "SELECT id, username, email, DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') AS created_at FROM users WHERE username = ?",
-        );
-        defer prep_res.deinit(ctx.allocator);
-        const prep_stmt: PreparedStatement = try prep_res.expect(.stmt);
-
-        const query_res = try db.executeRows(&prep_stmt, .{username});
-        const rows: ResultSet(BinaryResultRow) = try query_res.expect(.rows);
-        const rows_iter = rows.iter();
-        while (try rows_iter.next()) |row| {
-            var user: User = undefined;
-            try row.scan(&user);
-            try res.writer().print("Hello user id: {d} {s}\n", .{ user.id, user.created_at });
-        }
-    } else {
-        try res.writer().print("No username specified\n", .{});
-    }
-}
 
 fn handlePostApi(_: *http.Request, res: *http.Response, _: *anyopaque) !void {
     const writer = res.writer();
@@ -216,7 +298,12 @@ pub fn main() !void {
     var no_middleware = std.ArrayList(http.Middleware).init(allocator);
     defer no_middleware.deinit();
 
+    var session_middleware = std.ArrayList(http.Middleware).init(allocator);
+    try session_middleware.append(&sessionMiddleware);
+    defer session_middleware.deinit();
+
     var auth_middleware = std.ArrayList(http.Middleware).init(allocator);
+    try auth_middleware.append(&sessionMiddleware);
     try auth_middleware.append(&authMiddleware);
     defer auth_middleware.deinit();
 
@@ -224,23 +311,52 @@ pub fn main() !void {
     try route_list.append(.{ .method = .GET, .path = "/about", .handler = &handleAbout, .middleware = no_middleware });
     try route_list.append(.{ .method = .GET, .path = "/template", .handler = &handleTemplate, .middleware = no_middleware });
     try route_list.append(.{ .method = .GET, .path = "/redirect", .handler = &handleRedirect, .middleware = no_middleware });
-    try route_list.append(.{ .method = .GET, .path = "/user/:username", .handler = &handleUserPrefix, .middleware = no_middleware });
+    try route_list.append(.{ .method = .GET, .path = "/user/:username", .handler = &userIndex.handleUserPrefix, .middleware = no_middleware });
     try route_list.append(.{ .method = .GET, .path = "/api", .handler = &handlePostApi, .middleware = no_middleware });
+    try route_list.append(.{ .method = .GET, .path = "/auth/register", .handler = &register.handleRegisterGet, .middleware = session_middleware });
+    try route_list.append(.{ .method = .POST, .path = "/auth/register", .handler = &register.handleRegisterPost, .middleware = session_middleware });
 
     const method_str = http.getEnv("REQUEST_METHOD") orelse "";
     const path = http.getEnv("PATH_INFO") orelse "/";
     const query_raw = http.getEnv("QUERY_STRING") orelse "";
+    const content_type = http.getEnv("CONTENT_TYPE") orelse "";
+    const content_length_str = http.getEnv("CONTENT_LENGTH") orelse "0";
+    const content_length = try std.fmt.parseInt(usize, content_length_str, 10);
 
-    const method = http.Method.fromStr(method_str);
+    const method: std.http.Method = @enumFromInt(std.http.Method.parse(method_str));
     const query = try http.parseQuery(query_raw, allocator);
     const headers = try http.parseCgiHeaders(allocator);
+    var cookies = std.StringHashMap([]const u8).init(allocator);
+    defer cookies.deinit();
+    const cookie_headers = headers.getAll("Cookie");
+    defer cookie_headers.deinit();
+    for (cookie_headers.items) |cookie_header| {
+        try http.parseCookie(&cookies, cookie_header);
+    }
+
+    //-- Parse POST - application/x-www-form-urlencoded
+    var body = std.StringHashMap([]const u8).init(allocator);
+    defer body.deinit();
+
+    if (method == .POST and content_length > 0 and std.ascii.startsWithIgnoreCase(content_type, "application/x-www-form-urlencoded")) {
+        const body_buffer = try allocator.alloc(u8, content_length);
+        defer allocator.free(body_buffer);
+
+        const stdin = std.io.getStdIn().reader();
+        _ = try stdin.readAll(body_buffer);
+
+        body.deinit(); // Clean up previous StringHashMap
+
+        body = try http.parseQuery(body_buffer, allocator);
+    }
 
     var res = http.Response.init(allocator);
     defer res.deinit();
 
     var router = http.RouteSet{ .routes = route_list };
-    const ctx = Context{ .allocator = allocator, .db = null, .config = &config };
-    var req = http.Request{ .method = method, .path = path, .query = query, .headers = headers };
+    const ctx = Context{ .allocator = gpa_allocator, .db = null, .config = &config };
+    defer ctx.deinit();
+    var req = http.Request{ .method = method, .path = path, .query = query, .headers = headers, .cookies = cookies, .body = body };
 
     if (!try router.handle(&req, &res, @constCast(&ctx))) {
         try res.writer().print("404 Not Found: {s}\n", .{path});
