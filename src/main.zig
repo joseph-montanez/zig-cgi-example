@@ -43,9 +43,10 @@ const config: Config = switch (buildConfig.DEPLOYMENT) {
 };
 
 pub const SessionData = struct {
-    user_id: ?u64
+    user_id: ?u64,
+    errors_length: ?u16,
+    errors: [30][2][]const u8,
 };
-
 
 pub const ContextError = error{
     SessionNotInitialized, // If middleware didn't run or failed silently
@@ -93,7 +94,7 @@ pub const Context = struct {
         return client_ptr;
     }
 
-    pub fn getSession(self: *Context) !*session.Session {
+    pub fn getSession(self: *Context) !*session.Session(SessionData) {
         // Assumes middleware has successfully run and populated self.session
         return self.session orelse ContextError.SessionNotInitialized;
     }
@@ -104,15 +105,14 @@ pub const Context = struct {
         }
     }
 
-
     pub fn deinit(self: *const Context) void {
         if (self.db) |conn| {
             conn.deinit();
             self.allocator.destroy(conn);
         }
         if (self.session) |s| {
-             s.deinit();
-             self.allocator.destroy(s);
+            s.deinit();
+            self.allocator.destroy(s);
         }
     }
 };
@@ -157,17 +157,13 @@ fn sessionMiddleware(req: *const http.Request, _: *http.Response, ctx_ptr: *anyo
             // Success path
             loaded_session = maybe_session;
             if (loaded_session) |s| {
-                 std.debug.print("Middleware loaded session: {s}\n", .{s.id});
+                std.debug.print("Middleware loaded session: {s}\n", .{s.id});
             } else {
-                 std.debug.print("Middleware: Load returned null (e.g., file not found), will create new.\n", .{});
+                std.debug.print("Middleware: Load returned null (e.g., file not found), will create new.\n", .{});
             }
         } else |err| {
             switch (err) {
-                error.SessionFileOpenFailed,
-                error.SessionFileReadFailed,
-                error.SessionPathAllocationFailed,
-                error.SessionDataAllocationFailed
-                 => {
+                error.SessionFileOpenFailed, error.SessionFileReadFailed, error.SessionPathAllocationFailed, error.SessionDataAllocationFailed => {
                     std.debug.print("Non-critical session load error ({s}), proceeding to create new. Err: {any}\n", .{ session_id_from_cookie, err });
                 },
                 else => return err,
@@ -177,7 +173,7 @@ fn sessionMiddleware(req: *const http.Request, _: *http.Response, ctx_ptr: *anyo
 
     if (loaded_session == null) {
         loaded_session = try session.Session(SessionData).createNew(allocator);
-         std.debug.print("Middleware created new session: {s}\n", .{loaded_session.?.id});
+        std.debug.print("Middleware created new session: {s}\n", .{loaded_session.?.id});
     }
 
     ctx.session = loaded_session;
@@ -242,7 +238,6 @@ fn handleTemplate(_: *http.Request, res: *http.Response, ctx_ptr: *anyopaque) !v
     try res.writer().print("{s}\n", .{buf.items});
 }
 
-
 fn handlePostApi(_: *http.Request, res: *http.Response, _: *anyopaque) !void {
     const writer = res.writer();
     try writer.print("Received POST /api\n", .{});
@@ -284,7 +279,7 @@ pub fn main() !void {
     try auth_middleware.append(&authMiddleware);
     defer auth_middleware.deinit();
 
-    try route_list.append(.{ .method = .GET, .path = "/", .handler = &handleHome, .middleware = no_middleware});
+    try route_list.append(.{ .method = .GET, .path = "/", .handler = &handleHome, .middleware = no_middleware });
     try route_list.append(.{ .method = .GET, .path = "/about", .handler = &handleAbout, .middleware = no_middleware });
     try route_list.append(.{ .method = .GET, .path = "/template", .handler = &handleTemplate, .middleware = no_middleware });
     try route_list.append(.{ .method = .GET, .path = "/redirect", .handler = &handleRedirect, .middleware = no_middleware });
