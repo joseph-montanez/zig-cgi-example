@@ -24,7 +24,7 @@ The following is supported by the custom web framework for CGI
 
 * [Routes](#routes)
 * [Context](#context)
-* [Middleware](#middleware)
+* [Flight](#flight)
 
 ## Database Information
 
