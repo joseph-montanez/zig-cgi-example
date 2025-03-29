@@ -112,13 +112,14 @@ pub const Response = struct {
     }
 };
 
-pub const Middleware = *const fn (*Request, *Response, *anyopaque) anyerror!bool;
+pub const Flight = *const fn (*Request, *Response, *anyopaque) anyerror!bool;
 
 pub const Route = struct {
     method: std.http.Method,
     path: []const u8,
     handler: *const fn (*Request, *Response, *anyopaque) anyerror!void,
-    middleware: std.ArrayList(Middleware),
+    preFlights: ?std.ArrayList(Flight) = null,
+    postFlights: ?std.ArrayList(Flight) = null,
 };
 
 pub const RouteSet = struct {
@@ -160,13 +161,25 @@ pub const RouteSet = struct {
             }
 
             if (is_match and route.method == req.method) {
-                for (route.middleware.items) |middleware| {
-                    if (!(try middleware(req, res, ctx))) {
-                        return true;
+                if (route.preFlights) |preFlights| {
+                    for (preFlights.items) |flight| {
+                        if (!(try flight(req, res, ctx))) {
+                            return true;
+                        }
                     }
                 }
 
                 try route.handler(req, res, ctx);
+
+
+                if (route.postFlights) |postFlights| {
+                    for (postFlights.items) |flight| {
+                        if (!(try flight(req, res, ctx))) {
+                            return true;
+                        }
+                    }
+                }
+
                 return true;
             }
         }

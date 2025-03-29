@@ -54,7 +54,7 @@ pub fn handleRegisterGet(_: *http.Request, res: *http.Response, ctx_ptr: *anyopa
     try res.writer().print("{s}\n", .{buf.items});
 }
 
-pub fn handleRegisterPost(req: *http.Request, res: *http.Response, ctx_ptr: *anyopaque) !void {
+pub fn handleRegisterPost(req: *http.Request, res: *http.Response,ctx_ptr: *anyopaque) !void {
     const ctx: *main.Context = @ptrCast(@alignCast(ctx_ptr));
 
     // Validation
@@ -123,6 +123,9 @@ pub fn handleRegisterPost(req: *http.Request, res: *http.Response, ctx_ptr: *any
 
         res.status_code = .found;
         try res.setHeader("Location", "/auth/register");
+
+        
+
         return;
     }
 

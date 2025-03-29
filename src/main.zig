@@ -101,6 +101,7 @@ pub const Context = struct {
 
     pub fn saveSession(self: *Context) !void {
         if (self.session) |s| {
+            std.debug.print("Trying to save session\n");
             try s.save();
         }
     }
@@ -133,7 +134,7 @@ fn authMiddleware(req: *http.Request, res: *http.Response, ctx: *anyopaque) !boo
     return false;
 }
 
-fn sessionMiddleware(req: *const http.Request, _: *http.Response, ctx_ptr: *anyopaque) !bool {
+fn sessionPreflight(req: *const http.Request, _: *http.Response, ctx_ptr: *anyopaque) !bool {
     const ctx: *Context = @ptrCast(@alignCast(ctx_ptr));
 
     // If session already loaded (e.g., by another middleware), do nothing
@@ -177,6 +178,15 @@ fn sessionMiddleware(req: *const http.Request, _: *http.Response, ctx_ptr: *anyo
     }
 
     ctx.session = loaded_session;
+
+    return true;
+}
+
+fn sessionPostflight(_: *const http.Request, _: *http.Response, ctx_ptr: *anyopaque) !bool {
+    const ctx: *Context = @ptrCast(@alignCast(ctx_ptr));
+
+    //-- Save session - already checks if present / modified
+    try ctx.saveSession();
 
     return true;
 }
@@ -267,26 +277,39 @@ pub fn main() !void {
     var route_list = std.ArrayList(http.Route).init(allocator);
     defer route_list.deinit();
 
-    var no_middleware = std.ArrayList(http.Middleware).init(allocator);
-    defer no_middleware.deinit();
+    var session_preflights = std.ArrayList(http.Flight).init(allocator);
+    try session_preflights.append(&sessionPreflight);
+    defer session_preflights.deinit();
 
-    var session_middleware = std.ArrayList(http.Middleware).init(allocator);
-    try session_middleware.append(&sessionMiddleware);
-    defer session_middleware.deinit();
+    var session_postflights = std.ArrayList(http.Flight).init(allocator);
+    try session_postflights.append(&sessionPostflight);
+    defer session_postflights.deinit();
 
-    var auth_middleware = std.ArrayList(http.Middleware).init(allocator);
-    try auth_middleware.append(&sessionMiddleware);
-    try auth_middleware.append(&authMiddleware);
-    defer auth_middleware.deinit();
+    var auth_flights = std.ArrayList(http.Flight).init(allocator);
+    try auth_flights.append(&sessionPreflight);
+    try auth_flights.append(&authMiddleware);
+    defer auth_flights.deinit();
 
-    try route_list.append(.{ .method = .GET, .path = "/", .handler = &handleHome, .middleware = no_middleware });
-    try route_list.append(.{ .method = .GET, .path = "/about", .handler = &handleAbout, .middleware = no_middleware });
-    try route_list.append(.{ .method = .GET, .path = "/template", .handler = &handleTemplate, .middleware = no_middleware });
-    try route_list.append(.{ .method = .GET, .path = "/redirect", .handler = &handleRedirect, .middleware = no_middleware });
-    try route_list.append(.{ .method = .GET, .path = "/user/:username", .handler = &userIndex.handleUserPrefix, .middleware = no_middleware });
-    try route_list.append(.{ .method = .GET, .path = "/api", .handler = &handlePostApi, .middleware = no_middleware });
-    try route_list.append(.{ .method = .GET, .path = "/auth/register", .handler = &register.handleRegisterGet, .middleware = session_middleware });
-    try route_list.append(.{ .method = .POST, .path = "/auth/register", .handler = &register.handleRegisterPost, .middleware = session_middleware });
+    try route_list.append(.{ .method = .GET, .path = "/", .handler = &handleHome });
+    try route_list.append(.{ .method = .GET, .path = "/about", .handler = &handleAbout });
+    try route_list.append(.{ .method = .GET, .path = "/template", .handler = &handleTemplate });
+    try route_list.append(.{ .method = .GET, .path = "/redirect", .handler = &handleRedirect });
+    try route_list.append(.{ .method = .GET, .path = "/user/:username", .handler = &userIndex.handleUserPrefix });
+    try route_list.append(.{ .method = .GET, .path = "/api", .handler = &handlePostApi });
+    try route_list.append(.{
+        .method = .GET,
+        .path = "/auth/register",
+        .handler = &register.handleRegisterGet,
+        .preFlights = session_preflights,
+        .postFlights = session_postflights,
+    });
+    try route_list.append(.{
+        .method = .POST,
+        .path = "/auth/register",
+        .handler = &register.handleRegisterPost,
+        .preFlights = session_preflights,
+        .postFlights = session_postflights,
+    });
 
     const method_str = http.getEnv("REQUEST_METHOD") orelse "";
     const path = http.getEnv("PATH_INFO") orelse "/";
