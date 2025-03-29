@@ -54,7 +54,7 @@ pub fn handleRegisterGet(_: *http.Request, res: *http.Response, ctx_ptr: *anyopa
     try res.writer().print("{s}\n", .{buf.items});
 }
 
-pub fn handleRegisterPost(req: *http.Request, res: *http.Response, ctx_ptr: *anyopaque) !void {
+pub fn handleRegisterPost(req: *http.Request, res: *http.Response,ctx_ptr: *anyopaque) !void {
     const ctx: *main.Context = @ptrCast(@alignCast(ctx_ptr));
 
     // Validation
@@ -87,6 +87,46 @@ pub fn handleRegisterPost(req: *http.Request, res: *http.Response, ctx_ptr: *any
                 try errors.put("password_confirm", "Passwords do not match");
             }
         }
+    }
+
+    if (errors.count() > 0) {
+        var session = try ctx.getSession();
+        if (session.data) |*data| {
+            // Allocate the fixed-size array for errors.
+            const error_array_ptr = try ctx.allocator.alloc([30][2][]const u8, 1); // Allocate one instance of the array
+            defer ctx.allocator.free(error_array_ptr); //  free
+
+            // ... (copy errors into error_array as before, up to 30) ...
+            var i: usize = 0;
+            var iterator = errors.iterator();
+            while (iterator.next()) |entry| {
+                // Bounds check: Ensure we don't exceed the embedded array size
+                if (i >= data.errors.len) { // data.errors.len is 30
+                    std.log.warn("Session error array limit ({}) reached. Ignoring further errors.", .{data.errors.len});
+                    break;
+                }
+
+                // Get the actual slices by dereferencing the pointers from the iterator entry
+                const key_slice = entry.key_ptr.*;
+                const value_slice = entry.value_ptr.*;
+
+                data.errors[i][0] = try ctx.allocator.dupe(u8, key_slice);
+
+                errdefer ctx.allocator.free(data.errors[i][0]);
+                data.errors[i][1] = try ctx.allocator.dupe(u8, value_slice);
+
+                i += 1;
+            }
+            data.errors_length = @intCast(i); // Store the actual number of errors.
+            session.markModified();
+        }
+
+        res.status_code = .found;
+        try res.setHeader("Location", "/auth/register");
+
+        
+
+        return;
     }
 
     // Database Connection

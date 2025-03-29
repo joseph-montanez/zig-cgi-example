@@ -100,7 +100,7 @@ pub const Response = struct {
 
     pub fn send(self: *Response) !void {
         const stdout = std.io.getStdOut().writer();
-        try stdout.print("Status: {d} \r\n", .{self.status_code});
+        try stdout.print("Status: {d} \r\n", .{@intFromEnum(self.status_code)});
         for (self.headers.items.items) |header| {
             try stdout.print("{s}: {s}\r\n", .{ header.key, header.value });
         }
@@ -112,13 +112,14 @@ pub const Response = struct {
     }
 };
 
-pub const Middleware = *const fn (*Request, *Response, *anyopaque) anyerror!bool;
+pub const Flight = *const fn (*Request, *Response, *anyopaque) anyerror!bool;
 
 pub const Route = struct {
     method: std.http.Method,
     path: []const u8,
     handler: *const fn (*Request, *Response, *anyopaque) anyerror!void,
-    middleware: std.ArrayList(Middleware),
+    preFlights: ?std.ArrayList(Flight) = null,
+    postFlights: ?std.ArrayList(Flight) = null,
 };
 
 pub const RouteSet = struct {
@@ -160,13 +161,25 @@ pub const RouteSet = struct {
             }
 
             if (is_match and route.method == req.method) {
-                for (route.middleware.items) |middleware| {
-                    if (!(try middleware(req, res, ctx))) {
-                        return true;
+                if (route.preFlights) |preFlights| {
+                    for (preFlights.items) |flight| {
+                        if (!(try flight(req, res, ctx))) {
+                            return true;
+                        }
                     }
                 }
 
                 try route.handler(req, res, ctx);
+
+
+                if (route.postFlights) |postFlights| {
+                    for (postFlights.items) |flight| {
+                        if (!(try flight(req, res, ctx))) {
+                            return true;
+                        }
+                    }
+                }
+
                 return true;
             }
         }
@@ -239,14 +252,13 @@ pub fn parseCgiHeaders(allocator: std.mem.Allocator) !Headers {
     var env_vars = std.process.getEnvMap(allocator) catch unreachable;
     defer env_vars.deinit();
 
-     var iter = env_vars.iterator();
+    var iter = env_vars.iterator();
 
     while (iter.next()) |entry| {
         if (std.mem.startsWith(u8, entry.key_ptr.*, header_prefix)) {
             // Extract the header name (remove "HTTP_" and convert to lowercase).
             const cgi_name = entry.key_ptr.*;
             const header_name = cgi_name[header_prefix.len..];
-
 
             // Convert underscores to hyphens and lowercase to canonical form.
             var canonical_name_buf: [128]u8 = undefined; // Buffer for name conversion
@@ -262,7 +274,6 @@ pub fn parseCgiHeaders(allocator: std.mem.Allocator) !Headers {
                 }
                 canonical_name = writer.getWritten();
             }
-
 
             // Add the header to our Headers struct.
             const header_value = entry.value_ptr.*;

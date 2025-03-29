@@ -182,9 +182,9 @@ pub fn main() !void {
 }
 ```
 
-## Middleware
+## Flight
 
-Middleware can be added to load in sessions, authorize routes, enable CORS, etc. As long as the middleware returns true, it will process all middleware in the order provided. If you return false, no other middleware is execute, and the route is rejected.
+Flights can be added to load in sessions, authorize routes, enable CORS, etc. As long as the middleware returns true, it will process all middleware in the order provided. If you return false, no other middleware is execute, and the route is rejected. Flights can also be used for post route operations such as saving session data to disk or to a database.
 
 ```zig
 fn authMiddleware(req: *http.Request, res: *http.Response, ctx: *anyopaque) !bool {
