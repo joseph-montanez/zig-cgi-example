@@ -18,6 +18,14 @@ When you compile your application you will need to target musl:
 zig build -Doptimize=Debug -Dtarget=x86_64-linux-musl -Ddeployment=prod
 ```
 
+## Supported Features
+
+The following is supported by the custom web framework for CGI
+
+* [Routes](#routes)
+* [Context](#context)
+* [Middleware](#middleware)
+
 ## Database Information
 
 `src/config.zon.example` needs to be renamed to `src/config.prod.zon` and `src/config.local.zon`. Zon is like JSON but is at compile time imported. This can be changed to a runtime import, but you need to make code changes for that. This is new as of *Zig 0.14*
