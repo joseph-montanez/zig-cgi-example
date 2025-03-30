@@ -162,7 +162,7 @@ pub fn Session(comptime T: type) type {
             // Adjust depth_limit as needed, 0 means default. Use options for pretty printing if desired.
             try std.zon.stringify.serializeArbitraryDepth(
                 self.data,
-                .{ .depth_limit = 0, .whitespace = .indent_2 }, // Pretty print for readability
+                .{ }, // Pretty print for readability
                 buffer.writer(),
             );
 

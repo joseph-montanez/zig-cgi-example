@@ -101,7 +101,7 @@ pub const Context = struct {
 
     pub fn saveSession(self: *Context) !void {
         if (self.session) |s| {
-            std.debug.print("Trying to save session\n");
+            std.debug.print("Trying to save session\n", .{});
             try s.save();
         }
     }
