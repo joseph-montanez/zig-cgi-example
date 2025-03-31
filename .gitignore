@@ -10,3 +10,4 @@ public_html/index.cgi
 src/config.prod.zon
 /sessions
 /public_html/sessions
+.DS_Store
