@@ -139,6 +139,7 @@ fn sessionPreflight(req: *const http.Request, _: *http.Response, ctx_ptr: *anyop
 
     // If session already loaded (e.g., by another middleware), do nothing
     if (ctx.session != null) {
+        std.debug.print("Session already created\n", .{});
         return true;
     }
 
