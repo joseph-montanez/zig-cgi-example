@@ -40,7 +40,7 @@ pub fn Session(comptime T: type) type {
     return struct {
         allocator: std.mem.Allocator,
         id: []u8,
-        data: ?T,
+        data: ?*T,
         is_new: bool,
         modified: bool,
 
@@ -87,7 +87,13 @@ pub fn Session(comptime T: type) type {
                 std.debug.print("Failed to parse session file '{s}': {any}\n", .{ session_file_path, err });
                 return null;
             };
-            // errdefer std.zon.parse.free(allocator, parse_result, .{ .allocator = allocator }); // Free if subsequent steps fail
+            defer std.zon.parse.free(allocator, parse_result);
+
+            //
+            const data_ptr = try allocator.create(T);
+            errdefer allocator.destroy(data_ptr);
+
+            data_ptr.* = parse_result;
 
             // Allocate the Session struct itself
             const session_ptr = try allocator.create(Self);
@@ -101,7 +107,7 @@ pub fn Session(comptime T: type) type {
             session_ptr.* = Self{
                 .allocator = allocator,
                 .id = id_copy, // Store the allocated copy
-                .data = parse_result, // Assign the parsed data
+                .data = data_ptr, // Assign the parsed data
                 .is_new = false,
                 .modified = false,
             };
@@ -165,11 +171,6 @@ pub fn Session(comptime T: type) type {
                 std.debug.print("Path is relative. Using std.fs.cwd().makePath\n", .{});
                 try cwd.makePath(dir_path); // Creates recursively relative to cwd
                 std.debug.print("Ensured relative directory exists: {s} (relative to cwd)\n", .{dir_path});
-
-                // Optional: Get the actual absolute path if needed later
-                // const abs_path = try cwd.realpathAlloc(allocator, dir_path);
-                // defer allocator.free(abs_path);
-                // std.debug.print("Resolved absolute path: {s}\n", .{abs_path});
             }
 
             // Serialize session data to a buffer
@@ -209,17 +210,39 @@ pub fn Session(comptime T: type) type {
             self.modified = true;
         }
 
+        pub fn getData(self: *Self) !*T {
+            if (self.data) |data_ptr| {
+                return data_ptr; // Return existing data pointer
+            }
+
+            // Data is null, create, initialize, and assign it
+            std.debug.print("Session.getData(): Initializing null data for session {s}\n", .{self.id});
+            const new_data = try self.allocator.create(T);
+            errdefer self.allocator.destroy(new_data); // Ensure cleanup on error *before* assignment
+
+            new_data.* = T{
+                .user_id = null,
+                .errors_length = null,
+                .errors = [_][2][]const u8{.{ "", "" }} ** 30,
+            }; // Or initialize with specific defaults if needed
+
+            self.data = new_data; // Assign to the session
+            // self.modified = true; // Mark as modified
+            self.is_new = true;
+
+            return new_data; // Return the newly created data pointer
+        }
+
         // Cleans up resources owned by the Session struct
         pub fn deinit(self: *Self) void {
             // Free the parsed result if it exists
             if (self.data) |data| {
-                std.zon.parse.free(self.allocator, data);
+                // std.zon.parse.free(self.allocator, data);
+                self.allocator.destroy(data);
             }
 
             // Free the allocated session ID
             self.allocator.free(self.id);
-            // Destroy the Session struct itself (caller is responsible for this)
-            // self.allocator.destroy(self); NO! Caller does this.
         }
     };
 }

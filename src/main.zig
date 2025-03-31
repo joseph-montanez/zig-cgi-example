@@ -183,8 +183,23 @@ fn sessionPreflight(req: *const http.Request, _: *http.Response, ctx_ptr: *anyop
     return true;
 }
 
-fn sessionPostflight(_: *const http.Request, _: *http.Response, ctx_ptr: *anyopaque) !bool {
+fn sessionPostflight(_: *const http.Request, res: *http.Response, ctx_ptr: *anyopaque) !bool {
     const ctx: *Context = @ptrCast(@alignCast(ctx_ptr));
+    const s = try ctx.getSession();
+    if (s.is_new) {
+        std.debug.print("DEBUG: Cookie Name: {s}\n", .{session.SESSION_COOKIE_NAME});
+        std.debug.print("DEBUG: Session ID: {s}\n", .{s.id});
+        const cookie_str = try std.fmt.allocPrint(
+            ctx.allocator,
+            "{s} = {s}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400",
+            .{ session.SESSION_COOKIE_NAME, s.id },
+        );
+        defer ctx.allocator.free(cookie_str);
+
+        try res.setHeader("Set-Cookie", cookie_str);
+    } else {
+        std.debug.print("SESSION IS NO NEW, NOT USING SET-COOKIE!!!!\n", .{});
+    }
 
     //-- Save session - already checks if present / modified
     try ctx.saveSession();

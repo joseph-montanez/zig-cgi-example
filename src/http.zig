@@ -86,7 +86,7 @@ pub const Response = struct {
     }
 
     pub fn setHeader(self: *Response, key: []const u8, value: []const u8) !void {
-        return self.headers.add(key, value);
+        return try self.headers.add(key, value);
     }
 
     pub fn redirect(self: *Response, location: []const u8) !void {
@@ -170,7 +170,6 @@ pub const RouteSet = struct {
                 }
 
                 try route.handler(req, res, ctx);
-
 
                 if (route.postFlights) |postFlights| {
                     for (postFlights.items) |flight| {
