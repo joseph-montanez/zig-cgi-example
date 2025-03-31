@@ -18,7 +18,6 @@ pub const SessionData = struct {
     // If `username` were allocated, you'd add a `deinit` here.
 };
 
-
 pub const SessionError = error{
     SessionIdGenerationFailed,
     SessionFileOpenFailed,
@@ -47,9 +46,13 @@ pub fn Session(comptime T: type) type {
 
         const Self = @This();
 
-        // --- Private Helper ---
         fn getSessionFilePath(ally: std.mem.Allocator, id: []const u8) ![]u8 {
-            return std.fs.path.join(ally, &.{ SESSION_DIR, try std.fmt.allocPrint(ally, "{s}.zon", .{id}) });
+            const filename_part = try std.fmt.allocPrint(ally, "{s}.zon", .{id});
+            defer ally.free(filename_part);
+
+            const full_path = try std.fs.path.join(ally, &.{ SESSION_DIR, filename_part });
+
+            return full_path;
         }
 
         pub fn load(allocator: std.mem.Allocator, id: []const u8) !?*Self {
@@ -70,9 +73,7 @@ pub fn Session(comptime T: type) type {
             defer file.close();
 
             // Read the entire file content, ensuring null termination
-            const file_contents_terminated = try file.readToEndAllocOptions(
-                allocator,
-                1 * 1024 * 1024, // max_bytes
+            const file_contents_terminated = try file.readToEndAllocOptions(allocator, 1 * 1024 * 1024, // max_bytes
                 null, // size_hint (optional)
                 @alignOf(u8), // alignment
                 0 // THE IMPORTANT PART: sentinel value 0
@@ -102,7 +103,7 @@ pub fn Session(comptime T: type) type {
                 .id = id_copy, // Store the allocated copy
                 .data = parse_result, // Assign the parsed data
                 .is_new = false,
-                .modified = false
+                .modified = false,
             };
 
             return session_ptr;
@@ -152,7 +153,24 @@ pub fn Session(comptime T: type) type {
 
             // Ensure session directory exists
             const dir_path = std.fs.path.dirname(session_file_path).?;
-            try std.fs.makeDirAbsolute(dir_path); // Creates recursively
+            const cwd = std.fs.cwd();
+
+            if (std.fs.path.isAbsolute(dir_path)) {
+                // Path IS absolute (e.g., starts with '/' on Unix)
+                std.debug.print("Path is absolute. Using std.fs.makeDirAbsolute\n", .{});
+                try std.fs.makeDirAbsolute(dir_path);
+                std.debug.print("Ensured absolute directory exists: {s}\n", .{dir_path});
+            } else {
+                // Path IS relative (e.g., "./sessions", "sessions", ".")
+                std.debug.print("Path is relative. Using std.fs.cwd().makePath\n", .{});
+                try cwd.makePath(dir_path); // Creates recursively relative to cwd
+                std.debug.print("Ensured relative directory exists: {s} (relative to cwd)\n", .{dir_path});
+
+                // Optional: Get the actual absolute path if needed later
+                // const abs_path = try cwd.realpathAlloc(allocator, dir_path);
+                // defer allocator.free(abs_path);
+                // std.debug.print("Resolved absolute path: {s}\n", .{abs_path});
+            }
 
             // Serialize session data to a buffer
             var buffer = std.ArrayList(u8).init(self.allocator);
@@ -162,15 +180,23 @@ pub fn Session(comptime T: type) type {
             // Adjust depth_limit as needed, 0 means default. Use options for pretty printing if desired.
             try std.zon.stringify.serializeArbitraryDepth(
                 self.data,
-                .{ }, // Pretty print for readability
+                .{}, // Pretty print for readability
                 buffer.writer(),
             );
 
             // Write buffer to file
-            const file = try std.fs.createFileAbsolute(session_file_path, .{});
-            defer file.close();
 
-            try file.writeAll(buffer.items);
+            if (std.fs.path.isAbsolute(dir_path)) {
+                const file = try std.fs.createFileAbsolute(session_file_path, .{});
+                defer file.close();
+
+                try file.writeAll(buffer.items);
+            } else {
+                const file = try cwd.createFile(session_file_path, .{});
+                defer file.close(); // Ensure file is closed when function exits
+
+                try file.writeAll(buffer.items);
+            }
 
             // Reset flags after successful save
             self.modified = false;
@@ -222,4 +248,3 @@ pub fn parseSessionCookie(allocator: std.mem.Allocator, cookie_header: []const u
 
     return null;
 }
-
