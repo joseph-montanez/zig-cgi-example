@@ -22,10 +22,6 @@ pub fn handleUserPrefix(req: *http.Request, res: *http.Response, ctx_ptr: *anyop
     defer arena.deinit();
     const allocator = arena.allocator();
 
-
-    // Database Connection
-    const db = try ctx.getDb();
-
     if (req.query.get("username")) |username| {
         try res.writer().print("User Path: {s}\n", .{username});
         if (req.query.get("foo")) |val| {
@@ -41,6 +37,8 @@ pub fn handleUserPrefix(req: *http.Request, res: *http.Response, ctx_ptr: *anyop
             created_at: []const u8,
         };
 
+        // Database Connection
+        const db = try ctx.getDb();
         const prep_res = try db.prepare(allocator,
             "SELECT id, username, email, DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') AS created_at FROM users WHERE username = ?",
         );
