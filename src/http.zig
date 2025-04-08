@@ -18,11 +18,26 @@ pub const Headers = struct {
     }
 
     pub fn deinit(self: *Headers) void {
+        for (self.items.items) |header| {
+            self.allocator.free(header.key);
+            self.allocator.free(header.value);
+        }
         self.items.deinit();
     }
 
     pub fn add(self: *Headers, key: []const u8, value: []const u8) !void {
-        try self.items.append(.{ .key = key, .value = value });
+        const owned_key = try self.allocator.dupe(u8, key);
+        errdefer self.allocator.free(owned_key);
+
+        const owned_value = try self.allocator.dupe(u8, value);
+        errdefer self.allocator.free(owned_value); // Must free value if append fails
+
+        const new_header = Header{
+            .key = owned_key,
+            .value = owned_value,
+        };
+
+        try self.items.append(new_header);
     }
 
     pub fn get(self: Headers, key: []const u8) ?[]const u8 {
@@ -34,11 +49,13 @@ pub const Headers = struct {
         return null;
     }
 
-    pub fn getAll(self: Headers, key: []const u8) std.ArrayList([]const u8) {
+    pub fn getAll(self: Headers, key: []const u8) !std.ArrayList([]const u8) {
         var results = std.ArrayList([]const u8).init(self.allocator);
+        errdefer results.deinit(); // Ensure results list is cleaned up on error
+
         for (self.items.items) |header| {
             if (std.ascii.eqlIgnoreCase(header.key, key)) {
-                results.append(header.value) catch unreachable;
+                try results.append(header.value);
             }
         }
         return results;
@@ -101,11 +118,13 @@ pub const Response = struct {
     pub fn send(self: *Response) !void {
         const stdout = std.io.getStdOut().writer();
         try stdout.print("Status: {d} \r\n", .{@intFromEnum(self.status_code)});
+
         for (self.headers.items.items) |header| {
             try stdout.print("{s}: {s}\r\n", .{ header.key, header.value });
         }
         try stdout.print("Zig: 0.14.0\r\n", .{});
         try stdout.print("Content-Type: {s}\r\n", .{self.content_type});
+
         try stdout.print("\r\n", .{});
 
         try stdout.writeAll(self.buffer.items);

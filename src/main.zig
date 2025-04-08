@@ -204,6 +204,8 @@ fn sessionPostflight(_: *const http.Request, res: *http.Response, ctx_ptr: *anyo
     //-- Save session - already checks if present / modified
     try ctx.saveSession();
 
+    std.debug.print("Session written - Post Flight Complete!\n", .{});
+
     return true;
 }
 
@@ -339,10 +341,15 @@ pub fn main() !void {
     const headers = try http.parseCgiHeaders(allocator);
     var cookies = std.StringHashMap([]const u8).init(allocator);
     defer cookies.deinit();
-    const cookie_headers = headers.getAll("Cookie");
-    defer cookie_headers.deinit();
-    for (cookie_headers.items) |cookie_header| {
-        try http.parseCookie(&cookies, cookie_header);
+    const cookie_headers_result = headers.getAll("Cookie");
+    if (cookie_headers_result) |cookie_headers| {
+        defer cookie_headers.deinit();
+
+        for (cookie_headers.items) |cookie_header| {
+            try http.parseCookie(&cookies, cookie_header);
+        }
+    } else |err| {
+        std.debug.print("Could not get cookie headers: {any}\n", .{err});
     }
 
     //-- Parse POST - application/x-www-form-urlencoded
@@ -372,6 +379,8 @@ pub fn main() !void {
     if (!try router.handle(&req, &res, @constCast(&ctx))) {
         try res.writer().print("404 Not Found: {s}\n", .{path});
     }
+
+    std.debug.print("Response Completed, sending now\n", .{});
 
     try res.send();
 }
