@@ -62,25 +62,22 @@ pub fn Session(comptime T: type) type {
             };
             defer allocator.free(session_file_path);
 
-            // --- Start of changes ---
-            const cwd = std.fs.cwd(); // Get current working directory handle
-            var open_result: anyerror!std.fs.File = undefined; // To store result from either open call
+            const cwd = std.fs.cwd();
+            var open_result: anyerror!std.fs.File = undefined;
 
             if (std.fs.path.isAbsolute(session_file_path)) {
-                // Path IS absolute
                 std.debug.print("Session.load: Path is absolute: {s}\n", .{session_file_path});
-                open_result = std.fs.openFileAbsolute(session_file_path, .{}); // Specify read mode
+                // Use explicit read flag for clarity
+                open_result = std.fs.openFileAbsolute(session_file_path, .{});
             } else {
-                // Path IS relative
                 std.debug.print("Session.load: Path is relative: {s} (relative to cwd)\n", .{session_file_path});
-                open_result = cwd.openFile(session_file_path, .{}); // Open relative to cwd, specify read mode
+                open_result = cwd.openFile(session_file_path, .{});
             }
 
-            // Now handle the result uniformly
             const file = open_result catch |err| switch (err) {
                 error.FileNotFound => {
                     std.debug.print("Session file not found: {s}\n", .{session_file_path});
-                    return null; // Not an error, just no session found
+                    return null; // No session found
                 },
                 else => {
                     std.debug.print("Failed to open session file '{s}': {any}\n", .{ session_file_path, err });
@@ -88,48 +85,56 @@ pub fn Session(comptime T: type) type {
                 },
             };
             defer file.close();
-            // --- End of changes ---
 
-            // Read the entire file content - Added specific error mapping
+            // Read file content
             const file_contents_terminated = file.readToEndAllocOptions(
                 allocator,
-                1 * 1024 * 1024, // max_bytes
+                1 * 1024 * 1024, // max_bytes = 1MB
                 null, // size_hint
                 @alignOf(u8),
-                0, // sentinel
+                0, // sentinel for null termination
             ) catch |err| {
                 std.debug.print("Failed to read session file '{s}': {any}\n", .{ session_file_path, err });
                 return SessionError.SessionFileReadFailed;
             };
+            // This defer is crucial for the buffer read from the file
             defer allocator.free(file_contents_terminated);
 
-            // Parse the ZON data - Added specific error mapping
+            // --- CORRECTED ZON PARSING ---
             var status: std.zon.parse.Status = .{};
-            // Use parseAlloc to let ZON manage the allocation of the result struct T
-            const parse_result = std.zon.parse.parseAlloc(T, allocator, file_contents_terminated[0..], &status, .{}) catch |err| {
-                std.debug.print("Failed to parse session file '{s}': {any}\n", .{ session_file_path, err });
-                // Consider whether parse failure means "no session" (return null) or an actual error
-                return SessionError.SessionParseFailed; // Treat parse failure as an error
-                // return null; // Alternative: Treat parse failure as if no session existed
+            // 1. Use fromSlice to parse into a *value* of type T
+            const parsed_data_value = std.zon.parse.fromSlice(T, allocator, file_contents_terminated[0..], &status, .{}) catch |err| {
+                std.debug.print("Failed to parse session file '{s}': {any} {s}\n", .{ session_file_path, err, file_contents_terminated });
+                // Decide if parse failure means "no session" or an error
+                return SessionError.SessionParseFailed; // Treat parse failure as an error for now
             };
-            // IMPORTANT: parse_result is now *T, directly usable. No need to allocator.create(T) later.
-            // Defer freeing the structure allocated by parseAlloc
-            errdefer std.zon.parse.freeAlloc(T, allocator, parse_result);
+            // Note: parsed_data_value is of type T, NOT *T.
+            // If fromSlice failed, the catch block already returned.
+
+            // 2. Allocate memory on the heap for the data struct T
+            const data_ptr = try allocator.create(T);
+            // If allocator.create fails, no new resources need cleanup yet.
+            // If allocations *after* this fail, we need to destroy data_ptr:
+            errdefer allocator.destroy(data_ptr);
+
+            // 3. Copy the parsed data *value* into the allocated heap memory
+            data_ptr.* = parsed_data_value;
+            // --- END OF CORRECTED ZON PARSING ---
 
             // Allocate the Session struct itself
             const session_ptr = try allocator.create(Self);
-            // If session_ptr allocation fails, parse_result needs to be freed by errdefer above.
+            // If create fails, errdefer above cleans up data_ptr.
 
             // Allocate and copy the session ID
             const id_copy = try allocator.dupe(u8, id);
-            // If id_copy allocation fails, destroy session_ptr AND free parse_result
-            errdefer allocator.destroy(session_ptr); // Free session struct if ID copy fails
+            // If dupe fails, destroy session_ptr AND trigger errdefer for data_ptr.
+            errdefer allocator.destroy(session_ptr);
 
             // Initialize the session
             session_ptr.* = Self{
                 .allocator = allocator,
                 .id = id_copy, // Store the allocated copy of the ID
-                .data = parse_result, // Assign the data pointer allocated by ZON parseAlloc
+                .data = data_ptr, // Assign the pointer to the heap-allocated data
                 .is_new = false,
                 .modified = false,
             };
@@ -266,6 +271,8 @@ pub fn Session(comptime T: type) type {
 
             // Free the allocated session ID
             self.allocator.free(self.id);
+
+            std.debug.print("Session deinited: {s}\n", .{self.id});
         }
     };
 }
