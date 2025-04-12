@@ -384,3 +384,226 @@ pub fn main() !void {
 
     try res.send();
 }
+
+const testing = std.testing;
+const fs = std.fs;
+const mem = std.mem;
+
+// --- Test-Specific SessionData Definition ---
+// Use the exact SessionData struct you intend to use with the Session module.
+// This matches the one you provided in the Context section.
+pub const TestSessionData = struct {
+    user_id: ?u64 = null,
+    errors_length: ?u16 = null,
+    // Use comptime strings for simplicity when testing slices that are serialized/deserialized.
+    // Initialize with default empty strings to match the behavior in getData if needed.
+    errors: [30][2][]const u8 = [_][2][]const u8{.{ "", "" }} ** 30,
+};
+
+// --- Helper Function for Cleanup ---
+// Crucial for ensuring tests don't interfere with each other or leave garbage.
+fn cleanupSessionDir() !void {
+    // IMPORTANT: This uses the hardcoded SESSION_DIR from your session module.
+    // It's highly recommended to make SESSION_DIR configurable in your session.zig
+    // (e.g., pass it to a SessionManager or similar) for better testability
+    // and flexibility. For now, we'll use the hardcoded one.
+    const dir_path = session.SESSION_DIR;
+    const cwd = fs.cwd();
+
+    std.debug.print("\nAttempting cleanup of directory: {s}\n", .{dir_path});
+    // Try to remove the directory and its contents.
+    // Ignore "FileNotFound" errors during cleanup, as the dir might not exist yet
+    // or might have been cleaned up already.
+    cwd.deleteTree(dir_path) catch |err| switch (err) {
+        error.BadPathName => {
+            std.debug.print("Cleanup: Directory '{s}' not found, nothing to delete.\n", .{dir_path});
+        },
+        else => |e| {
+            // Log other errors but don't necessarily fail the test during cleanup.
+            std.debug.print("Warning: Failed to clean up session directory '{s}': {any}\n", .{ dir_path, e });
+            // Optionally re-throw if cleanup failure is critical: return e;
+        },
+    };
+    std.debug.print("Cleanup attempt finished for directory: {s}\n", .{dir_path});
+}
+
+// --- Main Test Case: Create, Modify, Save, Load, Verify ---
+test "Session: create, modify, save, load, verify" {
+    const allocator = testing.allocator;
+
+    // --- Setup: Ensure clean environment before test ---
+    // Run cleanup *before* the test starts and *after* it finishes (using defer).
+    try cleanupSessionDir();
+    defer cleanupSessionDir() catch |err| {
+        // Log deferred cleanup errors but usually don't fail the test for them.
+        std.debug.print("Error during deferred cleanup: {any}\n", .{err});
+    };
+
+    // --- 1. Create New Session ---
+    std.debug.print("TEST: Creating new session...\n", .{});
+    var session_instance = try session.Session(TestSessionData).createNew(allocator);
+    // Ensure the session struct itself and its contents are cleaned up
+    defer {
+        std.debug.print("TEST: Deiniting created session {s}\n", .{session_instance.id});
+        session_instance.deinit(); // Frees id, data pointer
+        allocator.destroy(session_instance); // Frees the session struct itself
+    }
+
+    try testing.expect(session_instance.is_new);
+    try testing.expect(session_instance.modified); // New sessions start modified
+    try testing.expect(session_instance.data == null); // Data should be null initially
+
+    const original_session_id = try allocator.dupe(u8, session_instance.id); // Keep ID for loading later
+    defer allocator.free(original_session_id);
+    std.debug.print("TEST: Created session ID: {s}\n", .{original_session_id});
+
+    // --- 2. Modify Session Data ---
+    std.debug.print("TEST: Getting and modifying session data...\n", .{});
+    // Get the data pointer (this will initialize it if null)
+    const data_ptr = try session_instance.getData();
+    try testing.expect(session_instance.data != null); // Should exist now
+
+    // Modify the data
+    data_ptr.* = TestSessionData{
+        .user_id = 9876,
+        .errors_length = 2,
+        .errors = undefined, // Initialize below
+    };
+    // Assign comptime strings to avoid lifetime issues with ZON parsing/stringifying slices
+    data_ptr.errors[0] = .{ "field_a", "Error message A" };
+    data_ptr.errors[1] = .{ "field_b", "Error message B" };
+    // Note: The default initialization already sets other errors to empty strings
+
+    // Explicitly mark modified *if* getData doesn't do it or if modifying after loading.
+    // Since createNew already marks as modified, and getData sets is_new=true if it creates data,
+    // save() would trigger anyway. But being explicit is good practice.
+    session_instance.markModified();
+    std.debug.print("TEST: Data modified. User ID: {?}\n", .{data_ptr.user_id});
+
+    // --- 3. Save Session ---
+    std.debug.print("TEST: Saving session {s}...\n", .{session_instance.id});
+    try session_instance.save();
+    // Verify flags reset after save
+    try testing.expect(!session_instance.is_new);
+    try testing.expect(!session_instance.modified);
+    std.debug.print("TEST: Session saved.\n", .{});
+
+    // --- 4. Verify File Existence (Optional but good sanity check) ---
+    const session_file_path = session.Session(TestSessionData).getSessionFilePath(allocator, original_session_id) catch |err| {
+        std.debug.print("Failed to get session file path for verification: {any}", .{err});
+        return err; // Fail test if we can't even construct the path
+    };
+    defer allocator.free(session_file_path);
+    std.debug.print("TEST: Checking existence of file: {s}\n", .{session_file_path});
+    try fs.cwd().access(session_file_path, .{}); // Will error if file doesn't exist
+    std.debug.print("TEST: File {s} exists.\n", .{session_file_path});
+
+    // --- 5. Load Session ---
+    // NOTE: We use original_session_id here. The session_instance still exists
+    // but we want to simulate loading from scratch using only the ID.
+    std.debug.print("TEST: Loading session {s}...\n", .{original_session_id});
+    const maybe_loaded_session = try session.Session(TestSessionData).load(allocator, original_session_id);
+
+    // Check that load returned a valid session pointer (not null)
+    try testing.expect(maybe_loaded_session != null);
+    const loaded_session = maybe_loaded_session.?; // Unwrap the optional pointer
+    defer { // Ensure loaded session is also cleaned up
+        std.debug.print("TEST: Deiniting loaded session {s}\n", .{loaded_session.id});
+        loaded_session.deinit();
+        allocator.destroy(loaded_session);
+    }
+    std.debug.print("TEST: Session loaded successfully.\n", .{});
+
+    // --- 6. Verify Loaded Data ---
+    std.debug.print("TEST: Verifying loaded session data...\n", .{});
+    // Check flags
+    try testing.expect(!loaded_session.is_new);
+    try testing.expect(!loaded_session.modified);
+
+    // Check ID
+    try testing.expectEqualSlices(u8, original_session_id, loaded_session.id);
+
+    // Check Data Content
+    try testing.expect(loaded_session.data != null); // Data must exist
+    const loaded_data = loaded_session.data.?; // Get pointer to data
+
+    try testing.expectEqual(@as(?u64, 9876), loaded_data.user_id);
+    try testing.expectEqual(@as(?u16, 2), loaded_data.errors_length);
+
+    // Verify specific error strings (use expectEqualSlices for []const u8)
+    try testing.expectEqualSlices(u8, "field_a", loaded_data.errors[0][0]);
+    try testing.expectEqualSlices(u8, "Error message A", loaded_data.errors[0][1]);
+    try testing.expectEqualSlices(u8, "field_b", loaded_data.errors[1][0]);
+    try testing.expectEqualSlices(u8, "Error message B", loaded_data.errors[1][1]);
+
+    // Verify an untouched error slot is still empty
+    try testing.expectEqualSlices(u8, "", loaded_data.errors[2][0]);
+    try testing.expectEqualSlices(u8, "", loaded_data.errors[2][1]);
+
+    std.debug.print("TEST: Verification successful!\n", .{});
+}
+
+// --- Optional: Test Loading Non-Existent Session ---
+test "Session: load non-existent returns null" {
+    const allocator = testing.allocator;
+
+    // --- Setup: Ensure clean environment ---
+    try cleanupSessionDir();
+    defer cleanupSessionDir() catch {}; // Ignore cleanup errors here
+
+    const non_existent_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"; // 64 hex chars
+    std.debug.print("TEST: Attempting to load non-existent session ID: {s}\n", .{non_existent_id});
+
+    // --- Load ---
+    const result = try session.Session(TestSessionData).load(allocator, non_existent_id);
+
+    // --- Verify ---
+    // `load` is designed to return `null` when the file is not found (error.FileNotFound).
+    // Other errors (like allocation errors) would propagate as errors from `load`.
+    try testing.expect(result == null);
+    std.debug.print("TEST: Successfully verified that loading a non-existent session returns null.\n", .{});
+
+    // If load *did* return a session unexpectedly, it would fail the expect(result == null) check.
+    // If load returned an *error* unexpectedly, the `try` would propagate it and fail the test.
+}
+
+// --- Optional: Test save() without modifications ---
+test "Session: save without modifications is a no-op" {
+    const allocator = testing.allocator;
+    try cleanupSessionDir();
+    defer cleanupSessionDir() catch {};
+
+    // --- Create and save once to establish a file ---
+    var s_init = try session.Session(TestSessionData).createNew(allocator);
+    defer {
+        s_init.deinit();
+        allocator.destroy(s_init);
+    }
+    const initial_id = try allocator.dupe(u8, s_init.id);
+    defer allocator.free(initial_id);
+    try s_init.save(); // First save
+
+    // --- Load the session ---
+    const maybe_s_load = try session.Session(TestSessionData).load(allocator, initial_id);
+    try testing.expect(maybe_s_load != null);
+    const s_load = maybe_s_load.?;
+    defer {
+        s_load.deinit();
+        allocator.destroy(s_load);
+    }
+
+    try testing.expect(!s_load.is_new);
+    try testing.expect(!s_load.modified);
+
+    // --- Attempt to save again without marking modified ---
+    std.debug.print("TEST: Attempting save() on unmodified loaded session...\n", .{});
+    // We need a way to verify save didn't *actually* write.
+    // We could check the file's modification time before/after, but that's complex.
+    // For now, we'll just call save() and trust its internal check.
+    // If the `if (!self.modified and !self.is_new)` check works, this call will do nothing.
+    try s_load.save();
+    std.debug.print("TEST: Save called on unmodified session (should have been no-op).\n", .{});
+
+    // We can't easily assert *nothing* happened without more complex file system checks (like mtime).
+    // This test mainly ensures `save()` doesn't crash or error out when called on an unmodified session.
+}

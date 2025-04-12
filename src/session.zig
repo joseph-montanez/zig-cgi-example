@@ -46,7 +46,7 @@ pub fn Session(comptime T: type) type {
 
         const Self = @This();
 
-        fn getSessionFilePath(ally: std.mem.Allocator, id: []const u8) ![]u8 {
+        pub fn getSessionFilePath(ally: std.mem.Allocator, id: []const u8) ![]u8 {
             const filename_part = try std.fmt.allocPrint(ally, "{s}.zon", .{id});
             defer ally.free(filename_part);
 
@@ -205,10 +205,12 @@ pub fn Session(comptime T: type) type {
             var buffer = std.ArrayList(u8).init(self.allocator);
             defer buffer.deinit();
 
+            const data_to_serialize: T = if (self.data) |data_ptr| data_ptr.* else T{}; // Use default struct T{} if null
+
             // Use serializeArbitraryDepth for potentially complex/nested data
             // Adjust depth_limit as needed, 0 means default. Use options for pretty printing if desired.
             try std.zon.stringify.serializeArbitraryDepth(
-                self.data,
+                data_to_serialize,
                 .{}, // Pretty print for readability
                 buffer.writer(),
             );
