@@ -152,7 +152,7 @@ fn handleUserPrefix(req: *http.Request, res: *http.Response, ctx_ptr: *anyopaque
 
 ## Context
 
-In Zig there is comptime, this should be used but as a quick alternative you can use `anyopaque`. 
+In Zig there is comptime, this should be used but as a quick alternative you can use `anyopaque`.
 
 ```zig
 const Config = struct {
@@ -184,7 +184,7 @@ pub fn main() !void {
 
 ## Flight
 
-Flights can be added to load in sessions, authorize routes, enable CORS, etc. As long as the middleware returns true, it will process all middleware in the order provided. If you return false, no other middleware is execute, and the route is rejected. Flights can also be used for post route operations such as saving session data to disk or to a database.
+Flights can be added to load in sessions, authorize routes, enable CORS, etc. As long as the flight returns true, it will process all middleware in the order provided. If you return false, no other flights are executed, and the route is rejected. Flights can also be used for post route operations such as saving session data to disk or to a database.
 
 ```zig
 fn authMiddleware(req: *http.Request, res: *http.Response, ctx: *anyopaque) !bool {
@@ -199,17 +199,33 @@ fn authMiddleware(req: *http.Request, res: *http.Response, ctx: *anyopaque) !boo
     // Authorization failed
     res.status_code = .unauthorized;
     try res.writer().print("Unauthorized\n", .{});
-    
+
     // Reject the other middleware/route
     return false;
 }
 
 pub fn main() !void {
-    var auth_middleware = std.ArrayList(http.Middleware).init(allocator);
-    try auth_middleware.append(&authMiddleware);
-    defer auth_middleware.deinit();
+    var auth_preflight = std.ArrayList(http.Flight).init(allocator);
+    try auth_preflight.append(&authMiddleware);
+    defer auth_preflight.deinit();
 
-    try route_list.append(.{ .method = .GET, .path = "/user/tasks", .handler = &register.handleUserTaskGet, .middleware = auth_middleware });
-    try route_list.append(.{ .method = .POST, .path = "/user/tasks", .handler = &register.handleUserTaskPost, .middleware = auth_middleware });
+    var empty_postflights = std.ArrayList(http.Flight).init(allocator);
+    defer empty_postflights.deinit();
+
+    try route_list.append(.{
+        .method = .GET,
+        .path = "/user/tasks",
+        .handler = &register.handleUserTaskGet,
+        .preFlights = auth_preflight,
+        .postFlights = empty_postflights,
+    });
+
+    try route_list.append(.{
+        .method = .POST,
+        .path = "/user/tasks",
+        .handler = &register.handleUserTaskPost,
+        .preFlights = auth_preflight,
+        .postFlights = empty_postflights,
+    });
 }
 ```
