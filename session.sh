@@ -11,8 +11,14 @@ SCRIPT_NAME_VALUE="/cgi-bin/$(basename "$CGI_BINARY")"
 # Set the PATH_INFO - the extra path component requested *after* the script name
 PATH_INFO_VALUE="/auth/register"
 
-# Set the query string you want to test (the part after the '?')
-QUERY_STRING="param1=value1"
+# --- POST Data Configuration ---
+# Define your POST data here.
+# For application/x-www-form-urlencoded, use key=value&key2=value2 format.
+# Ensure values are URL-encoded if they contain special characters.
+POST_DATA="full_name=John+Doe&email=john.doe%40example.com&password=mysecretpassword&password_confirm=mysecretpassword"
+
+# Set the Content-Type for POST requests
+CONTENT_TYPE_VALUE="application/x-www-form-urlencoded"
 
 # --- Input Validation (Recommended) ---
 if [[ ! -f "$CGI_BINARY" ]]; then
@@ -29,32 +35,32 @@ fi
 # --- Simulation ---
 # Construct the simulated full request URI for completeness (optional but good practice)
 SIMULATED_REQUEST_URI="${SCRIPT_NAME_VALUE}${PATH_INFO_VALUE}"
-# Add query string to URI only if it's not empty
-if [[ -n "$QUERY_STRING" ]]; then
-  SIMULATED_REQUEST_URI="${SIMULATED_REQUEST_URI}?${QUERY_STRING}"
-fi
 
-
-echo "--- Simulating GET Request ---"
-echo "Binary:         $CGI_BINARY"
-echo "Script Name:    $SCRIPT_NAME_VALUE"
-echo "Path Info:      $PATH_INFO_VALUE"
-echo "Query String:   $QUERY_STRING"
-echo "Simulated URI:  $SIMULATED_REQUEST_URI"
+echo "--- Simulating POST Request ---"
+echo "Binary:          $CGI_BINARY"
+echo "Script Name:     $SCRIPT_NAME_VALUE"
+echo "Path Info:       $PATH_INFO_VALUE"
+echo "Content-Type:    $CONTENT_TYPE_VALUE"
+echo "POST Data:       $POST_DATA"
+echo "Simulated URI:   $SIMULATED_REQUEST_URI"
 echo "------------------------------"
 echo "Output:"
 echo "" # Add a blank line for clarity before the output starts
 
-# Set the necessary environment variables for a GET request
-# including PATH_INFO and execute the binary.
-REQUEST_METHOD="GET" \
+# Calculate CONTENT_LENGTH
+CONTENT_LENGTH_VALUE=${#POST_DATA}
+
+# Set the necessary environment variables for a POST request
+# and pipe the POST data to the binary's stdin.
+REQUEST_METHOD="POST" \
 SCRIPT_NAME="$SCRIPT_NAME_VALUE" \
 PATH_INFO="$PATH_INFO_VALUE" \
-QUERY_STRING="$QUERY_STRING" \
+CONTENT_TYPE="$CONTENT_TYPE_VALUE" \
+CONTENT_LENGTH="$CONTENT_LENGTH_VALUE" \
 REQUEST_URI="$SIMULATED_REQUEST_URI" \
 SERVER_PROTOCOL="HTTP/1.1" \
 GATEWAY_INTERFACE="CGI/1.1" \
-"$CGI_BINARY"
+"$CGI_BINARY" <<< "$POST_DATA"
 
 # Capture the exit status of the CGI script
 EXIT_STATUS=$?

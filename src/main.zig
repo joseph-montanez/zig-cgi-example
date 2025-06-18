@@ -43,9 +43,40 @@ const config: Config = switch (buildConfig.DEPLOYMENT) {
 };
 
 pub const SessionData = struct {
-    user_id: ?u64,
-    errors_length: ?u16,
-    errors: [30][2][]const u8,
+    user_id: ?u64 = null,
+    username: ?[]u8 = null,
+    csrf_token: ?[32]u8 = null,
+
+    errors_length: ?u16 = null,
+    errors: [30][2][]const u8 = [_][2][]const u8{.{ "", "" }} ** 30,
+    pub fn deinit(self: *SessionData, allocator: std.mem.Allocator) void {
+        if (self.errors_length) |current_error_length| {
+            std.log.debug("SessionData deinit: freeing {d} error strings.", .{current_error_length});
+            for (0..current_error_length) |i| {
+                // Free the key string if it's not an empty slice (which points to static memory)
+                if (self.errors[i][0].len > 0) {
+                    allocator.free(self.errors[i][0]);
+                }
+                // Free the value string
+                if (self.errors[i][1].len > 0) {
+                    allocator.free(self.errors[i][1]);
+                }
+            }
+            // Reset errors_length to indicate they've been freed
+            self.errors_length = 0;
+        }
+
+        // If username is duped (e.g., from a database or form), it also needs freeing.
+        // Assuming it's `?[]u8`, check for null and free if not null and length > 0.
+        if (self.username) |user_slice| {
+            if (user_slice.len > 0) {
+                allocator.free(user_slice);
+            }
+            self.username = null; // Clear the pointer
+        }
+
+        // Add deinitialization for any other dynamically allocated fields in SessionData
+    }
 };
 
 pub const ContextError = error{
@@ -217,6 +248,7 @@ fn handleHome(_: *http.Request, res: *http.Response, _: *anyopaque) !void {
 }
 
 fn handleAbout(_: *http.Request, res: *http.Response, _: *anyopaque) !void {
+    res.content_type = "text/html";
     try res.writer().print("About Page\n", .{});
 }
 
@@ -262,6 +294,8 @@ fn handleTemplate(_: *http.Request, res: *http.Response, ctx_ptr: *anyopaque) !v
         try res.writer().print("{}\n", .{render_error_report});
         return err;
     };
+
+    res.content_type = "text/html";
 
     try res.writer().print("{s}\n", .{buf.items});
 }

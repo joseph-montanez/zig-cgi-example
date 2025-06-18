@@ -102,7 +102,7 @@ pub fn handleRegisterPost(req: *http.Request, res: *http.Response, ctx_ptr: *any
     }
     if (req.body.get("password")) |password| {
         if (req.body.get("password_confirm")) |password_confirm| {
-            if (std.mem.eql(u8, password, password_confirm)) {
+            if (!std.mem.eql(u8, password, password_confirm)) {
                 try errors.put("password_confirm", "Passwords do not match");
             }
         }
@@ -113,9 +113,18 @@ pub fn handleRegisterPost(req: *http.Request, res: *http.Response, ctx_ptr: *any
 
         const data_ptr: *main.SessionData = try session.getData();
 
+        // Clean up existing data
+        if (data_ptr.errors_length) |current_errors_len| {
+            for (0..current_errors_len) |j| {
+                ctx.allocator.free(data_ptr.errors[j][0]);
+                ctx.allocator.free(data_ptr.errors[j][1]);
+            }
+        }
+        data_ptr.errors_length = 0; // Reset the count since we're about to fill it again
+
         // Allocate the fixed-size array for errors.
-        const error_array_ptr = try ctx.allocator.alloc([30][2][]const u8, 1); // Allocate one instance of the array
-        defer ctx.allocator.free(error_array_ptr); //  free
+        //const error_array_ptr = try ctx.allocator.alloc([30][2][]const u8, 1); // Allocate one instance of the array
+        // defer ctx.allocator.free(error_array_ptr); //  free
 
         // ... (copy errors into error_array as before, up to 30) ...
         var i: usize = 0;
@@ -133,7 +142,7 @@ pub fn handleRegisterPost(req: *http.Request, res: *http.Response, ctx_ptr: *any
 
             data_ptr.errors[i][0] = try ctx.allocator.dupe(u8, key_slice);
 
-            errdefer ctx.allocator.free(data_ptr.errors[i][0]);
+            //errdefer ctx.allocator.free(data_ptr.errors[i][0]);
             data_ptr.errors[i][1] = try ctx.allocator.dupe(u8, value_slice);
 
             i += 1;

@@ -22,12 +22,14 @@ pub fn handleUserPrefix(req: *http.Request, res: *http.Response, ctx_ptr: *anyop
     defer arena.deinit();
     const allocator = arena.allocator();
 
+    res.content_type = "text/html";
+
     if (req.query.get("username")) |username| {
-        try res.writer().print("User Path: {s}\n", .{username});
+        try res.writer().print("User Path: {s}<br>\n", .{username});
         if (req.query.get("foo")) |val| {
-            try res.writer().print("foo = {s}\n", .{val});
+            try res.writer().print("foo = {s}<br>\n", .{val});
         } else {
-            try res.writer().print("`foo` parameter not found\n", .{});
+            try res.writer().print("`foo` parameter not found<br>\n", .{});
         }
 
         const User = struct {
@@ -39,7 +41,8 @@ pub fn handleUserPrefix(req: *http.Request, res: *http.Response, ctx_ptr: *anyop
 
         // Database Connection
         const db = try ctx.getDb();
-        const prep_res = try db.prepare(allocator,
+        const prep_res = try db.prepare(
+            allocator,
             "SELECT id, username, email, DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') AS created_at FROM users WHERE username = ?",
         );
         defer prep_res.deinit(allocator);

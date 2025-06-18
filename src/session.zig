@@ -1,23 +1,5 @@
 const std = @import("std");
 
-pub const SessionData = struct {
-    user_id: ?u64 = null,
-    username: ?[]u8 = null, // Note: Slices parsed from ZON may need careful lifetime management or copying
-    csrf_token: ?[32]u8 = null, // Fixed-size array is often easier
-
-    // IMPORTANT: If you parse data containing slices (`[]u8`), and you need to
-    // modify or keep that data after the original parsed buffer is freed,
-    // you MUST allocate and copy it. For simplicity here, we'll assume
-    // slices are either short-lived or point to comptime strings if set manually.
-    // For runtime strings loaded from ZON, manage lifetimes carefully or copy.
-
-    // We need a way to free potentially allocated data within SessionData
-    // if we copy strings during parsing/modification. For this example,
-    // we'll keep it simple and assume no deep allocations within SessionData itself
-    // are managed *after* std.zon.parse.free is called on the main result.
-    // If `username` were allocated, you'd add a `deinit` here.
-};
-
 pub const SessionError = error{
     SessionIdGenerationFailed,
     SessionFileOpenFailed,
@@ -267,14 +249,19 @@ pub fn Session(comptime T: type) type {
         pub fn deinit(self: *Self) void {
             // Free the parsed result if it exists
             if (self.data) |data| {
-                // std.zon.parse.free(self.allocator, data);
+                data.deinit(self.allocator);
+
                 self.allocator.destroy(data);
+
+                self.data = null;
             }
+
+            std.debug.print("Session deinited: {s}\n", .{self.id});
 
             // Free the allocated session ID
             self.allocator.free(self.id);
 
-            std.debug.print("Session deinited: {s}\n", .{self.id});
+            self.id = "";
         }
     };
 }
