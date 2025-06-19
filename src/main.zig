@@ -16,6 +16,7 @@ const http = @import("http.zig");
 const session = @import("session.zig");
 // Pages
 const register = @import("pages/auth/register.zig");
+const userDashboard = @import("pages/user/dashboard.zig");
 const userIndex = @import("pages/user/index.zig");
 
 // Configuration
@@ -238,6 +239,33 @@ fn sessionPostflight(_: *const http.Request, res: *http.Response, ctx_ptr: *anyo
     return true;
 }
 
+fn isLoggedInFlight(_: *const http.Request, res: *http.Response, ctx_ptr: *anyopaque) !bool {
+    const ctx: *Context = @ptrCast(@alignCast(ctx_ptr));
+
+    if (ctx.session == null) {
+        std.debug.print("isLoggedInMiddleware: Session not initialized.\n", .{});
+        res.status_code = .internal_server_error; // Or redirect to login
+        try res.writer().print("Session not initialized. Please try again.\n", .{});
+        return false;
+    }
+
+    const session_data_ptr = try ctx.session.?.getData();
+
+    if (session_data_ptr.user_id) |user_id| {
+        if (user_id > 0) {
+            std.debug.print("isLoggedInMiddleware: User {d} is logged in.\n", .{user_id});
+            return true; // User is logged in
+        }
+    }
+
+    std.debug.print("isLoggedInMiddleware: User not logged in. Redirecting to /auth/login\n", .{});
+
+    res.status_code = .found;
+    try res.setHeader("Location", "/auth/login");
+    try res.writer().print("Redirecting to login.\n", .{});
+    return false;
+}
+
 //-- Route Handlers
 fn handleHome(_: *http.Request, res: *http.Response, _: *anyopaque) !void {
     const content = @embedFile("home.html");
@@ -340,6 +368,11 @@ pub fn main() !void {
     try auth_flights.append(&authMiddleware);
     defer auth_flights.deinit();
 
+    var logged_in_flights = std.ArrayList(http.Flight).init(allocator);
+    try logged_in_flights.append(&sessionPreflight); // Always ensure session is loaded first
+    try logged_in_flights.append(&isLoggedInFlight); // Then check if logged in
+    defer logged_in_flights.deinit();
+
     try route_list.append(.{ .method = .GET, .path = "/", .handler = &handleHome });
     try route_list.append(.{ .method = .GET, .path = "/about", .handler = &handleAbout });
     try route_list.append(.{ .method = .GET, .path = "/template", .handler = &handleTemplate });
@@ -358,6 +391,13 @@ pub fn main() !void {
         .path = "/auth/register",
         .handler = &register.handleRegisterPost,
         .preFlights = session_preflights,
+        .postFlights = session_postflights,
+    });
+    try route_list.append(.{
+        .method = .GET,
+        .path = "/dashboard",
+        .handler = &userDashboard.handleDashboardGet,
+        .preFlights = logged_in_flights, // Use the new middleware list
         .postFlights = session_postflights,
     });
 
