@@ -14,6 +14,33 @@ const BinaryResultRow = myzql.result.BinaryResultRow;
 const TableStructs = myzql.result.TableStructs;
 const ResultSet = myzql.result.ResultSet;
 
+fn checkEmailExists(allocator: std.mem.Allocator, db: *Conn, email: []const u8) !bool {
+    const prep_res = try db.prepare(
+        allocator,
+        "SELECT id FROM users WHERE email = ?",
+    );
+    defer prep_res.deinit(allocator); // Always deinit prepared statement resources
+    const prep_stmt: PreparedStatement = try prep_res.expect(.stmt);
+
+    const query_res = try db.executeRows(&prep_stmt, .{email});
+    const rows: ResultSet(BinaryResultRow) = try query_res.expect(.rows);
+
+    // If next() returns a row, it means the email exists.
+    return (try rows.iter().next() != null);
+}
+
+pub fn hashPassword(allocator: std.mem.Allocator, password: []const u8) ![]const u8 {
+    var h = std.crypto.hash.sha2.Sha256.init(.{});
+    h.update(password);
+    var digest: [32]u8 = undefined;
+    h.final(&digest);
+
+    const hex_array = std.fmt.bytesToHex(digest[0..], .lower);
+    const hex_slice = try allocator.dupe(u8, &hex_array);
+
+    return hex_slice;
+}
+
 pub fn handleRegisterGet(_: *http.Request, res: *http.Response, ctx_ptr: *anyopaque) !void {
     const ctx: *main.Context = @ptrCast(@alignCast(ctx_ptr));
 
@@ -80,31 +107,65 @@ pub fn handleRegisterPost(req: *http.Request, res: *http.Response, ctx_ptr: *any
     var errors = std.StringArrayHashMap([]const u8).init(ctx.allocator);
     defer errors.deinit();
 
-    if (req.body.get("full_name")) |full_name| {
+    // Capture inputs from the request body
+    const full_name_opt = req.body.get("full_name");
+    const email_opt = req.body.get("email");
+    const password_opt = req.body.get("password");
+    const password_confirm_opt = req.body.get("password_confirm");
+
+    if (full_name_opt) |full_name| {
         if (full_name.len < 1) {
             try errors.put("full_name", "Please enter a name");
         }
+    } else {
+        try errors.put("full_name", "Full name is required");
     }
-    if (req.body.get("email")) |email| {
+
+    if (email_opt) |email| {
         if (email.len < 1) {
             try errors.put("email", "Please enter an email");
         }
+        // Basic email format check (optional but recommended)
+        // if (!std.ascii.isEmail(email)) { try errors.put("email", "Invalid email format"); }
+    } else {
+        try errors.put("email", "Email is required");
     }
-    if (req.body.get("password")) |password| {
+
+    if (password_opt) |password| {
         if (password.len < 1) {
             try errors.put("password", "Please enter a password");
         }
+    } else {
+        try errors.put("password", "Password is required");
     }
-    if (req.body.get("password_confirm")) |password_confirm| {
+
+    if (password_confirm_opt) |password_confirm| {
         if (password_confirm.len < 1) {
             try errors.put("password_confirm", "Please confirm the password");
         }
+    } else {
+        try errors.put("password_confirm", "Password confirmation is required");
     }
-    if (req.body.get("password")) |password| {
-        if (req.body.get("password_confirm")) |password_confirm| {
-            if (!std.mem.eql(u8, password, password_confirm)) {
-                try errors.put("password_confirm", "Passwords do not match");
+
+    if (password_opt) |password| {
+        if (password_confirm_opt) |password_confirm| {
+            if (password.len > 0 and password_confirm.len > 0) {
+                if (!std.mem.eql(u8, password, password_confirm)) {
+                    try errors.put("password_confirm", "Passwords do not match");
+                }
             }
+        }
+    }
+
+    if (errors.count() == 0) {
+        // We can safely unwrap these now as the previous checks would have added errors
+        // if they were missing or empty.
+        const email = email_opt.?;
+
+        const db = try ctx.getDb(); // Connect to DB only if necessary
+
+        if (try checkEmailExists(ctx.allocator, db, email)) {
+            try errors.put("email", "This email is already registered.");
         }
     }
 
@@ -114,19 +175,16 @@ pub fn handleRegisterPost(req: *http.Request, res: *http.Response, ctx_ptr: *any
         const data_ptr: *main.SessionData = try session.getData();
 
         // Clean up existing data
-        if (data_ptr.errors_length) |current_errors_len| {
-            for (0..current_errors_len) |j| {
-                ctx.allocator.free(data_ptr.errors[j][0]);
-                ctx.allocator.free(data_ptr.errors[j][1]);
+        if (data_ptr.errors_length) |i| {
+            if (data_ptr.errors[i][0]) |s| { // <--- Safe to free if not null
+                ctx.allocator.free(s);
+            }
+            if (data_ptr.errors[i][1]) |s| { // <--- Safe to free if not null
+                ctx.allocator.free(s);
             }
         }
         data_ptr.errors_length = 0; // Reset the count since we're about to fill it again
 
-        // Allocate the fixed-size array for errors.
-        //const error_array_ptr = try ctx.allocator.alloc([30][2][]const u8, 1); // Allocate one instance of the array
-        // defer ctx.allocator.free(error_array_ptr); //  free
-
-        // ... (copy errors into error_array as before, up to 30) ...
         var i: usize = 0;
         var iterator = errors.iterator();
         while (iterator.next()) |entry| {
@@ -142,7 +200,6 @@ pub fn handleRegisterPost(req: *http.Request, res: *http.Response, ctx_ptr: *any
 
             data_ptr.errors[i][0] = try ctx.allocator.dupe(u8, key_slice);
 
-            //errdefer ctx.allocator.free(data_ptr.errors[i][0]);
             data_ptr.errors[i][1] = try ctx.allocator.dupe(u8, value_slice);
 
             i += 1;
@@ -159,37 +216,41 @@ pub fn handleRegisterPost(req: *http.Request, res: *http.Response, ctx_ptr: *any
     // Database Connection
     const db = try ctx.getDb();
 
-    if (req.query.get("username")) |username| {
-        try res.writer().print("User Path: {s}\n", .{username});
-        if (req.query.get("foo")) |val| {
-            try res.writer().print("foo = {s}\n", .{val});
-        } else {
-            try res.writer().print("`foo` parameter not found\n", .{});
-        }
+    const email = email_opt.?;
+    const password = password_opt.?;
 
-        const User = struct {
-            id: c_uint,
-            username: []const u8,
-            email: []const u8,
-            created_at: []const u8,
-        };
+    const hashed_password = try hashPassword(ctx.allocator, password);
+    defer ctx.allocator.free(hashed_password);
 
-        const prep_res = try db.prepare(
-            ctx.allocator,
-            "SELECT id, username, email, DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') AS created_at FROM users WHERE username = ?",
-        );
-        defer prep_res.deinit(ctx.allocator);
-        const prep_stmt: PreparedStatement = try prep_res.expect(.stmt);
+    const insert_sql = "INSERT INTO users (username, email, password_hash, role, created_at) " ++
+        "VALUES (?, ?, ?, ?, NOW())";
 
-        const query_res = try db.executeRows(&prep_stmt, .{username});
-        const rows: ResultSet(BinaryResultRow) = try query_res.expect(.rows);
-        const rows_iter = rows.iter();
-        while (try rows_iter.next()) |row| {
-            var user: User = undefined;
-            try row.scan(&user);
-            try res.writer().print("Hello user id: {d} {s}\n", .{ user.id, user.created_at });
-        }
-    } else {
-        try res.writer().print("No username specified\n", .{});
-    }
+    const prep_insert_res = try db.prepare(ctx.allocator, insert_sql);
+    defer prep_insert_res.deinit(ctx.allocator);
+    const prep_insert_stmt: PreparedStatement = try prep_insert_res.expect(.stmt);
+
+    const user_role = "role";
+
+    _ = try db.execute(&prep_insert_stmt, .{
+        email,
+        email,
+        hashed_password,
+        user_role,
+    });
+
+    const new_user_id: u64 = @intCast(db.sequence_id);
+
+    std.debug.print("User registered successfully: {s} ID: {d}\n", .{ email, new_user_id });
+
+    var session = try ctx.getSession();
+    const data_ptr: *main.SessionData = try session.getData();
+
+    data_ptr.user_id = new_user_id;
+    data_ptr.username = try ctx.allocator.dupe(u8, email);
+
+    session.markModified();
+
+    res.status_code = .found;
+
+    try res.setHeader("Location", "/dashboard");
 }
