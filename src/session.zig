@@ -235,7 +235,7 @@ pub fn Session(comptime T: type) type {
             new_data.* = T{
                 .user_id = null,
                 .errors_length = null,
-                .errors = [_][2][]const u8{.{ "", "" }} ** 30,
+                .errors = [_][2]?[]const u8{.{ null, null }} ** 30,
             }; // Or initialize with specific defaults if needed
 
             self.data = new_data; // Assign to the session

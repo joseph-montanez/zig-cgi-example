@@ -44,22 +44,20 @@ const config: Config = switch (buildConfig.DEPLOYMENT) {
 
 pub const SessionData = struct {
     user_id: ?u64 = null,
-    username: ?[]u8 = null,
+    username: ?[]const u8 = null,
     csrf_token: ?[32]u8 = null,
 
     errors_length: ?u16 = null,
-    errors: [30][2][]const u8 = [_][2][]const u8{.{ "", "" }} ** 30,
+    errors: [30][2]?[]const u8 = undefined,
     pub fn deinit(self: *SessionData, allocator: std.mem.Allocator) void {
         if (self.errors_length) |current_error_length| {
             std.log.debug("SessionData deinit: freeing {d} error strings.", .{current_error_length});
             for (0..current_error_length) |i| {
-                // Free the key string if it's not an empty slice (which points to static memory)
-                if (self.errors[i][0].len > 0) {
-                    allocator.free(self.errors[i][0]);
+                if (self.errors[i][0]) |s| {
+                    allocator.free(s);
                 }
-                // Free the value string
-                if (self.errors[i][1].len > 0) {
-                    allocator.free(self.errors[i][1]);
+                if (self.errors[i][1]) |s| {
+                    allocator.free(s);
                 }
             }
             // Reset errors_length to indicate they've been freed
