@@ -11,7 +11,7 @@ pub const SessionError = error{
     SessionParseFailed,
     SessionSerializationFailed,
     SessionIdEncodingFailed,
-    CookieParsingFailed, // Added for clarity
+    CookieParsingFailed,
 };
 
 const SESSION_ID_BYTES = 32; // Length of raw random bytes for session ID
@@ -79,38 +79,28 @@ pub fn Session(comptime T: type) type {
                 std.debug.print("Failed to read session file '{s}': {any}\n", .{ session_file_path, err });
                 return SessionError.SessionFileReadFailed;
             };
-            // This defer is crucial for the buffer read from the file
             defer allocator.free(file_contents_terminated);
 
-            // --- CORRECTED ZON PARSING ---
             var status: std.zon.parse.Status = .{};
-            // 1. Use fromSlice to parse into a *value* of type T
+            defer status.deinit(allocator);
+
             const parsed_data_value = std.zon.parse.fromSlice(T, allocator, file_contents_terminated[0..], &status, .{}) catch |err| {
                 std.debug.print("Failed to parse session file '{s}': {any} {s}\n", .{ session_file_path, err, file_contents_terminated });
                 // Decide if parse failure means "no session" or an error
                 return SessionError.SessionParseFailed; // Treat parse failure as an error for now
             };
-            // Note: parsed_data_value is of type T, NOT *T.
-            // If fromSlice failed, the catch block already returned.
 
-            // 2. Allocate memory on the heap for the data struct T
             const data_ptr = try allocator.create(T);
-            // If allocator.create fails, no new resources need cleanup yet.
-            // If allocations *after* this fail, we need to destroy data_ptr:
-            errdefer allocator.destroy(data_ptr);
-
-            // 3. Copy the parsed data *value* into the allocated heap memory
+            errdefer {
+                data_ptr.deinit(allocator);
+                allocator.destroy(data_ptr);
+            }
             data_ptr.* = parsed_data_value;
-            // --- END OF CORRECTED ZON PARSING ---
 
-            // Allocate the Session struct itself
             const session_ptr = try allocator.create(Self);
-            // If create fails, errdefer above cleans up data_ptr.
 
-            // Allocate and copy the session ID
             const id_copy = try allocator.dupe(u8, id);
-            // If dupe fails, destroy session_ptr AND trigger errdefer for data_ptr.
-            errdefer allocator.destroy(session_ptr);
+            errdefer allocator.free(id_copy);
 
             // Initialize the session
             session_ptr.* = Self{

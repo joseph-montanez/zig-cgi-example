@@ -50,15 +50,22 @@ pub const SessionData = struct {
 
     errors_length: ?u16 = null,
     errors: [30][2]?[]const u8 = undefined,
+
     pub fn deinit(self: *SessionData, allocator: std.mem.Allocator) void {
         if (self.errors_length) |current_error_length| {
             std.log.debug("SessionData deinit: freeing {d} error strings.", .{current_error_length});
             for (0..current_error_length) |i| {
                 if (self.errors[i][0]) |s| {
-                    allocator.free(s);
+                    if (s.len > 0) {
+                        allocator.free(s);
+                    }
+                    self.errors[i][0] = null;
                 }
                 if (self.errors[i][1]) |s| {
-                    allocator.free(s);
+                    if (s.len > 0) {
+                        allocator.free(s);
+                    }
+                    self.errors[i][1] = null;
                 }
             }
             // Reset errors_length to indicate they've been freed
@@ -79,10 +86,9 @@ pub const SessionData = struct {
 };
 
 pub const ContextError = error{
-    SessionNotInitialized, // If middleware didn't run or failed silently
+    SessionNotInitialized,
     DBConnectionFailed,
-    DNSNotFound, // From getDb
-    // Add other context-specific errors if needed
+    DNSNotFound,
 };
 
 pub const Context = struct {
@@ -125,7 +131,6 @@ pub const Context = struct {
     }
 
     pub fn getSession(self: *Context) !*session.Session(SessionData) {
-        // Assumes middleware has successfully run and populated self.session
         return self.session orelse ContextError.SessionNotInitialized;
     }
 
@@ -461,31 +466,19 @@ const testing = std.testing;
 const fs = std.fs;
 const mem = std.mem;
 
-// --- Test-Specific SessionData Definition ---
-// Use the exact SessionData struct you intend to use with the Session module.
-// This matches the one you provided in the Context section.
 pub const TestSessionData = struct {
     user_id: ?u64 = null,
     errors_length: ?u16 = null,
-    // Use comptime strings for simplicity when testing slices that are serialized/deserialized.
-    // Initialize with default empty strings to match the behavior in getData if needed.
     errors: [30][2][]const u8 = [_][2][]const u8{.{ "", "" }} ** 30,
 };
 
 // --- Helper Function for Cleanup ---
 // Crucial for ensuring tests don't interfere with each other or leave garbage.
 fn cleanupSessionDir() !void {
-    // IMPORTANT: This uses the hardcoded SESSION_DIR from your session module.
-    // It's highly recommended to make SESSION_DIR configurable in your session.zig
-    // (e.g., pass it to a SessionManager or similar) for better testability
-    // and flexibility. For now, we'll use the hardcoded one.
     const dir_path = session.SESSION_DIR;
     const cwd = fs.cwd();
 
     std.debug.print("\nAttempting cleanup of directory: {s}\n", .{dir_path});
-    // Try to remove the directory and its contents.
-    // Ignore "FileNotFound" errors during cleanup, as the dir might not exist yet
-    // or might have been cleaned up already.
     cwd.deleteTree(dir_path) catch |err| switch (err) {
         error.BadPathName => {
             std.debug.print("Cleanup: Directory '{s}' not found, nothing to delete.\n", .{dir_path});
