@@ -226,7 +226,16 @@ fn sessionPostflight(_: *const http.Request, res: *http.Response, ctx_ptr: *anyo
         std.debug.print("DEBUG: Session ID: {s}\n", .{s.id});
         const cookie_str = try std.fmt.allocPrint(
             ctx.allocator,
-            "{s} = {s}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400",
+            "{s} = {s}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400",
+            .{ session.SESSION_COOKIE_NAME, s.id },
+        );
+        defer ctx.allocator.free(cookie_str);
+
+        try res.setHeader("Set-Cookie", cookie_str);
+    } else if (s.is_deleted) {
+        const cookie_str = try std.fmt.allocPrint(
+            ctx.allocator,
+            "{s} = {s}; Path=/; HttpOnly; SameSite=Strict; Max-Age=0",
             .{ session.SESSION_COOKIE_NAME, s.id },
         );
         defer ctx.allocator.free(cookie_str);

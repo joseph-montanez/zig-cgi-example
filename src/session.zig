@@ -25,6 +25,7 @@ pub fn Session(comptime T: type) type {
         data: ?*T,
         is_new: bool,
         modified: bool,
+        is_deleted: bool,
 
         const Self = @This();
 
@@ -109,6 +110,7 @@ pub fn Session(comptime T: type) type {
                 .data = data_ptr, // Assign the pointer to the heap-allocated data
                 .is_new = false,
                 .modified = false,
+                .is_deleted = false,
             };
 
             std.debug.print("Session loaded successfully: {s}\n", .{session_file_path});
@@ -140,6 +142,7 @@ pub fn Session(comptime T: type) type {
                 .data = null, // Default/empty session data
                 .is_new = true,
                 .modified = true, // Mark as modified so it gets saved
+                .is_deleted = false,
             };
 
             return session_ptr;
@@ -207,9 +210,12 @@ pub fn Session(comptime T: type) type {
             std.debug.print("Session saved: {s}\n", .{session_file_path});
         }
 
-        // Marks the session as modified (so it will be saved)
         pub fn markModified(self: *Self) void {
             self.modified = true;
+        }
+
+        pub fn markDeleted(self: *Self) void {
+            self.is_deleted = true;
         }
 
         pub fn getData(self: *Self) !*T {

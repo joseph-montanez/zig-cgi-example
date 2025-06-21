@@ -1,13 +1,12 @@
 services:
   apache:
-    image: httpd:2.4
+    build: ./docker/apache
     container_name: apache
     ports:
       - "8088:80"
     volumes:
       - ./public_html:/var/www/html
       - ./zig-out/bin/zig_cgi:/var/www/html/index.cgi
-      - ./docker/apache/conf/httpd.conf:/usr/local/apache2/conf/httpd.conf
     depends_on:
       - mariadb
 
