@@ -8,5 +8,5 @@ pub fn handleRegisterGet(_: *http.Request, res: *http.Response, ctx_ptr: *anyopa
     var session = try ctx.getSession();
     session.markDeleted();
 
-    res.setHeader("Location", "/auth/login");
+    try res.setHeader("Location", "/auth/login");
 }

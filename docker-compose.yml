@@ -4,6 +4,8 @@ services:
     container_name: apache
     ports:
       - "8088:80"
+    networks:
+      - my_app_network
     volumes:
       - ./public_html:/var/www/html
       - ./zig-out/bin/zig_cgi:/var/www/html/index.cgi
@@ -18,11 +20,17 @@ services:
       MARIADB_DATABASE: db_name
       MARIADB_USER: db_username
       MARIADB_PASSWORD: db_password
+    networks:
+      - my_app_network
     ports:
       - "8306:3306"
     volumes:
       - ./docker/mariadb/database.sql:/docker-entrypoint-initdb.d/init.sql:ro
       - zdb_data:/var/lib/mysql
+
+networks:
+  my_app_network:
+    driver: bridge
 
 volumes:
   zdb_data:

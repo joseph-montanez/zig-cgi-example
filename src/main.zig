@@ -11,13 +11,15 @@ const BinaryResultRow = myzql.result.BinaryResultRow;
 const TableStructs = myzql.result.TableStructs;
 const ResultSet = myzql.result.ResultSet;
 const ztl = @import("ztl");
-
+// Libs
 const http = @import("http.zig");
 const session = @import("session.zig");
 // Pages
 const register = @import("pages/auth/register.zig");
 const userDashboard = @import("pages/user/dashboard.zig");
 const userIndex = @import("pages/user/index.zig");
+const logout = @import("pages/auth/logout.zig");
+const login = @import("pages/auth/login.zig");
 
 // Configuration
 const buildConfig = @cImport({
@@ -409,8 +411,29 @@ pub fn main() !void {
     });
     try route_list.append(.{
         .method = .GET,
+        .path = "/auth/login",
+        .handler = &login.handleLoginGet,
+        .preFlights = session_preflights,
+        .postFlights = session_postflights,
+    });
+    try route_list.append(.{
+        .method = .POST,
+        .path = "/auth/login",
+        .handler = &login.handleLoginPost,
+        .preFlights = session_preflights,
+        .postFlights = session_postflights,
+    });
+    try route_list.append(.{
+        .method = .GET,
         .path = "/dashboard",
         .handler = &userDashboard.handleDashboardGet,
+        .preFlights = logged_in_flights, // Use the new middleware list
+        .postFlights = session_postflights,
+    });
+    try route_list.append(.{
+        .method = .GET,
+        .path = "/logout",
+        .handler = &logout.handleRegisterGet,
         .preFlights = logged_in_flights, // Use the new middleware list
         .postFlights = session_postflights,
     });

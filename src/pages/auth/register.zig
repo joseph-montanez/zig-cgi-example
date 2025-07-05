@@ -53,23 +53,44 @@ pub fn handleRegisterGet(_: *http.Request, res: *http.Response, ctx_ptr: *anyopa
                 return;
             }
         }
-        if (d.*.errors_length) |errors_length| {
-            if (errors_length > 0) {
-                // Do Stuff here
-
-            }
-        }
     } else {
         std.debug.print("NO SESSION CREATED\n", .{});
     }
 
     res.content_type = "text/html";
 
-    const Product = struct {
-        name: []const u8,
+    const ErrorItem = struct {
+        key: []const u8,
+        message: []const u8,
     };
 
-    var template = ztl.Template(void).init(ctx.allocator, {});
+    const RegisterContext = struct {
+        errors: ?[]const ErrorItem = null,
+    };
+
+    var template_context = RegisterContext{};
+
+    var error_items = std.ArrayList(ErrorItem).init(ctx.allocator);
+    defer error_items.deinit();
+
+    if (session.data) |d| {
+        if (d.errors_length) |len| {
+            if (len > 0) {
+                // Convert the raw error array into a list of ErrorItem structs
+                for (d.errors[0..len]) |err_pair| {
+                    try error_items.append(.{
+                        .key = err_pair[0] orelse "unknown_key",
+                        .message = err_pair[1] orelse "An unknown error occurred.",
+                    });
+                }
+                template_context.errors = error_items.items;
+                try session.clearErrors();
+                session.markModified();
+            }
+        }
+    }
+
+    var template = ztl.Template(RegisterContext).init(ctx.allocator, template_context);
     defer template.deinit();
 
     var compile_error_report = ztl.CompileErrorReport{};
@@ -88,10 +109,7 @@ pub fn handleRegisterGet(_: *http.Request, res: *http.Response, ctx_ptr: *anyopa
     var render_error_report = ztl.RenderErrorReport{};
 
     // The render method is thread-safe.
-    template.render(buf.writer(), .{ .products = [_]Product{
-        .{ .name = "Keemun" },
-        .{ .name = "Silver Needle" },
-    } }, .{ .error_report = &render_error_report }) catch |err| {
+    template.render(buf.writer(), template_context, .{ .error_report = &render_error_report }) catch |err| {
         defer render_error_report.deinit();
         try res.writer().print("{}\n", .{render_error_report});
         return err;
@@ -229,28 +247,36 @@ pub fn handleRegisterPost(req: *http.Request, res: *http.Response, ctx_ptr: *any
     defer prep_insert_res.deinit(ctx.allocator);
     const prep_insert_stmt: PreparedStatement = try prep_insert_res.expect(.stmt);
 
-    const user_role = "role";
+    const user_role = "user";
 
-    _ = try db.execute(&prep_insert_stmt, .{
+    const insert_result = try db.execute(&prep_insert_stmt, .{
         email,
         email,
         hashed_password,
         user_role,
     });
 
-    const new_user_id: u64 = @intCast(db.sequence_id);
+    switch (insert_result) {
+        .ok => |ok| {
+            const new_user_id = ok.last_insert_id;
+            std.debug.print("User registered successfully: {s} ID: {d}\n", .{ email, new_user_id });
 
-    std.debug.print("User registered successfully: {s} ID: {d}\n", .{ email, new_user_id });
+            var session = try ctx.getSession();
+            const data_ptr = try session.getData();
+            data_ptr.user_id = new_user_id;
+            data_ptr.username = try ctx.allocator.dupe(u8, email);
+            session.markModified();
 
-    var session = try ctx.getSession();
-    const data_ptr: *main.SessionData = try session.getData();
+            res.status_code = .found;
+            try res.setHeader("Location", "/dashboard");
+        },
+        .err => |err| {
+            std.log.err("Database error during registration: {s}", .{err.error_message});
 
-    data_ptr.user_id = new_user_id;
-    data_ptr.username = try ctx.allocator.dupe(u8, email);
-
-    session.markModified();
-
-    res.status_code = .found;
-
-    try res.setHeader("Location", "/dashboard");
+            var session = try ctx.getSession();
+            try session.setError("form", "Could not register account. Please try again later.");
+            res.status_code = .found;
+            try res.setHeader("Location", "/auth/register");
+        },
+    }
 }

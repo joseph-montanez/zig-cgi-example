@@ -14,6 +14,17 @@
       <div class="row justify-content-center">
         <div class="col-md-6">
             <h2 class="mb-4 text-center">Registration Form</h2>
+
+            <% if (@errors and @errors.len > 0) { %>
+              <div class="alert alert-danger">
+                <ul class="mb-0">
+                <% foreach (@errors) |err| { %>
+                  <li><%= escape err["message"] %></li>
+                <% } %>
+                </ul>
+              </div>
+            <% } %>
+
             <form method="post" action="" enctype="application/x-www-form-urlencoded">
               <div class="mb-3">
                 <label for="inputName" class="form-label">Name</label>

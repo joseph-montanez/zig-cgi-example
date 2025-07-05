@@ -29,6 +29,18 @@ pub fn Session(comptime T: type) type {
 
         const Self = @This();
 
+        comptime {
+            if (!@hasDecl(T, "deinit")) {
+                @compileError("The type '" ++ @typeName(T) ++ "' passed to Session(T) must have a 'deinit' method");
+            }
+            if (!@hasField(T, "errors")) {
+                @compileError("The type '" ++ @typeName(T) ++ "' passed to Session(T) must have an 'errors' field.");
+            }
+            if (!@hasField(T, "errors_length")) {
+                @compileError("The type '" ++ @typeName(T) ++ "' passed to Session(T) must have an 'errors_length' field.");
+            }
+        }
+
         pub fn getSessionFilePath(ally: std.mem.Allocator, id: []const u8) ![]u8 {
             const filename_part = try std.fmt.allocPrint(ally, "{s}.zon", .{id});
             defer ally.free(filename_part);
@@ -228,11 +240,7 @@ pub fn Session(comptime T: type) type {
             const new_data = try self.allocator.create(T);
             errdefer self.allocator.destroy(new_data); // Ensure cleanup on error *before* assignment
 
-            new_data.* = T{
-                .user_id = null,
-                .errors_length = null,
-                .errors = [_][2]?[]const u8{.{ null, null }} ** 30,
-            }; // Or initialize with specific defaults if needed
+            new_data.* = T{};
 
             self.data = new_data; // Assign to the session
             // self.modified = true; // Mark as modified
@@ -258,6 +266,36 @@ pub fn Session(comptime T: type) type {
             self.allocator.free(self.id);
 
             self.id = "";
+        }
+
+        pub fn clearErrors(self: *Self) !void {
+            const data = try self.getData();
+            if (data.errors_length) |len| {
+                // Bounds check for safety, though len should be correct.
+                const safe_len = @min(len, data.errors.len);
+                for (data.errors[0..safe_len]) |*err_pair| {
+                    if (err_pair.*[0]) |key| self.allocator.free(key);
+                    if (err_pair.*[1]) |val| self.allocator.free(val);
+                    err_pair.*[0] = null;
+                    err_pair.*[1] = null;
+                }
+            }
+            data.errors_length = 0;
+            self.markModified();
+        }
+
+        pub fn setError(self: *Self, key: []const u8, value: []const u8) !void {
+            try self.clearErrors(); // Clear old errors first
+            const data_ptr = try self.getData();
+
+            if (data_ptr.errors.len > 0) {
+                data_ptr.errors[0][0] = try self.allocator.dupe(u8, key);
+                data_ptr.errors[0][1] = try self.allocator.dupe(u8, value);
+                data_ptr.errors_length = 1;
+                self.markModified();
+            } else {
+                std.log.warn("Session error array is empty, cannot set error.", .{});
+            }
         }
     };
 }
