@@ -1,5 +1,6 @@
 const std = @import("std");
 const myzql = @import("myzql");
+const cgi = @import("cgi.zig");
 
 pub const Header = struct {
     key: []const u8,
@@ -85,6 +86,7 @@ pub const Response = struct {
     content_type: []const u8 = "text/plain",
     headers: Headers,
     buffer: std.ArrayList(u8),
+    dest_writer: std.io.AnyWriter,
 
     pub fn init(allocator: std.mem.Allocator) Response {
         return .{
@@ -323,4 +325,40 @@ pub fn parseCookie(cookies: *std.StringHashMap([]const u8), cookie_header: []con
             try cookies.put(cookie_name, cookie_value);
         }
     }
+}
+
+pub fn parseRequest(allocator: std.mem.Allocator, io: cgi.IOProvider) !Request {
+    const method_str = io.getEnv("REQUEST_METHOD") orelse "GET";
+    const path = io.getEnv("PATH_INFO") orelse "/";
+    const query_raw = io.getEnv("QUERY_STRING") orelse "";
+    const content_type = io.getEnv("CONTENT_TYPE") orelse "";
+    const content_length_str = io.getEnv("CONTENT_LENGTH") orelse "0";
+    const content_length = try std.fmt.parseInt(usize, content_length_str, 10);
+
+    const headers = try parseCgiHeaders(allocator); // Assuming parseCgiHeaders is adapted to use the IOProvider as well, or you use a different method for FCGI
+    const query = try parseQuery(query_raw, allocator);
+
+    var cookies = std.StringHashMap([]const u8).init(allocator);
+    if (headers.get("Cookie")) |cookie_header| {
+        try parseCookie(&cookies, cookie_header);
+    }
+
+    var body_map = std.StringHashMap([]const u8).init(allocator);
+    if (std.ascii.startsWithIgnoreCase(content_type, "application/x-www-form-urlencoded")) {
+        if (content_length > 0) {
+            const body_buffer = try allocator.alloc(u8, content_length);
+            defer allocator.free(body_buffer);
+            _ = try io.reader().readAll(body_buffer);
+            body_map = try parseQuery(body_buffer, allocator);
+        }
+    }
+
+    return Request{
+        .method = std.http.Method.parse(method_str) catch .GET,
+        .path = path,
+        .headers = headers,
+        .cookies = cookies,
+        .query = query,
+        .body = body_map,
+    };
 }

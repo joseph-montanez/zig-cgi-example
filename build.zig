@@ -6,6 +6,7 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const no_bin = b.option(bool, "no-bin", "skip emitting binary") orelse false;
     const deployment_str = b.option([]const u8, "deployment", "Deployment target (dev, prod, stage, local)") orelse "local";
+    const cgi_str = b.option([]const u8, "cgi", "CGI Runtime (cgi, fcgi)") orelse "cgi";
 
     const deployment_int: c_int = blk: {
         if (std.mem.eql(u8, deployment_str, "prod")) {
@@ -21,6 +22,9 @@ pub fn build(b: *std.Build) void {
             break :blk 0;
         }
     };
+
+    const is_cgi = std.mem.eql(u8, cgi_str, "cgi");
+    const is_fcgi = std.mem.eql(u8, cgi_str, "fcgi");
 
     // Standard target options allows the person running `zig build` to choose
     // what target to build for. Here we do not override the defaults, which
@@ -104,9 +108,21 @@ pub fn build(b: *std.Build) void {
         .include_path = "config.h",
     }, .{
         .DEPLOYMENT = deployment_int,
+        .IS_CGI = is_cgi,
+        .IS_FCGI = is_fcgi,
     });
 
     exe.addConfigHeader(config);
+
+    if (is_fcgi) {
+        exe.linkSystemLibrary("fcgi");
+        // if (target.query.cpu_arch.?.isArm()) {
+        exe.addIncludePath(.{ .cwd_relative = "/usr/include/aarch64-linux-gnu" });
+        exe.addIncludePath(.{ .cwd_relative = "/usr/include" });
+        exe.addLibraryPath(.{ .cwd_relative = "/usr/lib/aarch64-linux-gnu" });
+        // }
+        exe.linkLibC();
+    }
 
     // This declares intent for the executable to be installed into the
     // standard location when the user invokes the "install" step (the default

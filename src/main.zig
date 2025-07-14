@@ -14,6 +14,7 @@ const ztl = @import("ztl");
 // Libs
 const http = @import("http.zig");
 const session = @import("session.zig");
+const cgi = @import("cgi.zig");
 // Pages
 const register = @import("pages/auth/register.zig");
 const userDashboard = @import("pages/user/dashboard.zig");
@@ -24,6 +25,12 @@ const login = @import("pages/auth/login.zig");
 // Configuration
 const buildConfig = @cImport({
     @cInclude("config.h");
+});
+
+const fcgi = @cImport({
+    if (buildConfig.IS_FCGI == 1) {
+        @cInclude("fcgiapp.h");
+    }
 });
 
 pub const Config = struct {
@@ -358,6 +365,142 @@ fn handlePostApi(_: *http.Request, res: *http.Response, _: *anyopaque) !void {
     }
 }
 
+const IOProvider = union(enum) {
+    cgi: void,
+    fcgi: *const fcgi.FCGX_Request,
+
+    pub fn getEnv(self: IOProvider, key: [:0]const u8) ?[:0]const u8 {
+        return switch (self) {
+            .cgi => http.getEnv(key),
+            .fcgi => |req| http.FCGIEnv.init(req.envp).get(key),
+        };
+    }
+
+    pub fn reader(self: IOProvider) std.io.AnyReader {
+        return switch (self) {
+            .cgi => std.io.getStdIn().reader(),
+            .fcgi => |req| .{ .context = FcgiStreamReader{ .stream = req.in } },
+        };
+    }
+
+    pub fn writer(self: IOProvider) std.io.AnyWriter {
+        return switch (self) {
+            .cgi => std.io.getStdOut().writer(),
+            .fcgi => |req| .{ .context = FcgiStreamWriter{ .stream = req.out } },
+        };
+    }
+
+    // Finishes the request (a no-op for CGI)
+    pub fn finish(self: IOProvider) void {
+        switch (self) {
+            .cgi => {},
+            .fcgi => |req| fcgi.FCGX_Finish_r(@constCast(req)),
+        }
+    }
+};
+
+const FcgiStreamReader = struct {
+    stream: *fcgi.FCGX_Stream,
+
+    pub fn read(self: @This(), buffer: []u8) anyerror!usize {
+        const n = fcgi.FCGX_GetStr(buffer.ptr, @intCast(buffer.len), self.stream);
+        if (n < 0) return error.FcgiReadError;
+        return @intCast(n);
+    }
+};
+
+const FcgiStreamWriter = struct {
+    stream: *fcgi.FCGX_Stream,
+
+    pub fn write(self: @This(), bytes: []const u8) anyerror!usize {
+        const n = fcgi.FCGX_PutStr(bytes.ptr, @intCast(bytes.len), self.stream);
+        if (n < 0) return error.FcgiWriteError;
+        return @intCast(n);
+    }
+};
+
+fn handleRequest(allocator: std.mem.Allocator, router: *const http.RouteSet, app_context: *Context, io: http.IOProvider) !void {
+    var req = try http.parseRequest(allocator, io);
+    defer {
+        req.headers.deinit();
+        req.cookies.deinit();
+        req.query.deinit();
+        req.body.deinit();
+    }
+
+    var res = http.Response.init(allocator, io.writer());
+    defer res.deinit();
+
+    if (!try router.handle(&req, &res, app_context)) {
+        res.status_code = .not_found;
+        try res.writer().print("404 Not Found", .{});
+    }
+
+    try res.send();
+
+    io.finish();
+}
+
+// fn processRequest(
+//     allocator: std.mem.Allocator,
+//     router: *const http.RouteSet,
+//     app_context: *Context,
+//     io: IOProvider,
+// ) !void {
+//     const method_str = io.getEnv("REQUEST_METHOD") orelse "";
+//     const path = io.getEnv("PATH_INFO") orelse "/";
+//     const query_raw = io.getEnv("QUERY_STRING") orelse "";
+//     const content_type = io.getEnv("CONTENT_TYPE") orelse "";
+//     const content_length_str = io.getEnv("CONTENT_LENGTH") orelse "0";
+//     const content_length = try std.fmt.parseInt(usize, content_length_str, 10);
+
+//     const method: std.http.Method = @enumFromInt(std.http.Method.parse(method_str));
+//     const query = try http.parseQuery(query_raw, allocator);
+//     const headers = try http.parseCgiHeaders(allocator);
+//     var cookies = std.StringHashMap([]const u8).init(allocator);
+//     defer cookies.deinit();
+//     const cookie_headers_result = headers.getAll("Cookie");
+//     if (cookie_headers_result) |cookie_headers| {
+//         defer cookie_headers.deinit();
+
+//         for (cookie_headers.items) |cookie_header| {
+//             try http.parseCookie(&cookies, cookie_header);
+//         }
+//     } else |err| {
+//         std.debug.print("Could not get cookie headers: {any}\n", .{err});
+//     }
+
+//     //-- Parse POST - application/x-www-form-urlencoded
+//     var body = std.StringHashMap([]const u8).init(allocator);
+//     defer body.deinit();
+
+//     if (method == .POST and content_length > 0 and std.ascii.startsWithIgnoreCase(content_type, "application/x-www-form-urlencoded")) {
+//         const body_buffer = try allocator.alloc(u8, content_length);
+//         defer allocator.free(body_buffer);
+
+//         _ = try io.reader().readAll(body_buffer);
+//         // const stdin = std.io.getStdIn().reader();
+//         // _ = try stdin.readAll(body_buffer);
+
+//         body.deinit(); // Clean up previous StringHashMap
+
+//         body = try http.parseQuery(body_buffer, allocator);
+//     }
+
+//     var res = http.Response.init(allocator);
+//     defer res.deinit();
+
+//     var req = http.Request{ .method = method, .path = path, .query = query, .headers = headers, .cookies = cookies, .body = body };
+
+//     if (!try router.handle(&req, &res, @constCast(&app_context))) {
+//         try res.writer().print("404 Not Found: {s}\n", .{path});
+//     }
+
+//     std.debug.print("Response Completed, sending now\n", .{});
+
+//     try res.send();
+// }
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const gpa_allocator = gpa.allocator();
@@ -427,71 +570,44 @@ pub fn main() !void {
         .method = .GET,
         .path = "/dashboard",
         .handler = &userDashboard.handleDashboardGet,
-        .preFlights = logged_in_flights, // Use the new middleware list
+        .preFlights = logged_in_flights,
         .postFlights = session_postflights,
     });
     try route_list.append(.{
         .method = .GET,
         .path = "/logout",
         .handler = &logout.handleRegisterGet,
-        .preFlights = logged_in_flights, // Use the new middleware list
+        .preFlights = logged_in_flights,
         .postFlights = session_postflights,
     });
-
-    const method_str = http.getEnv("REQUEST_METHOD") orelse "";
-    const path = http.getEnv("PATH_INFO") orelse "/";
-    const query_raw = http.getEnv("QUERY_STRING") orelse "";
-    const content_type = http.getEnv("CONTENT_TYPE") orelse "";
-    const content_length_str = http.getEnv("CONTENT_LENGTH") orelse "0";
-    const content_length = try std.fmt.parseInt(usize, content_length_str, 10);
-
-    const method: std.http.Method = @enumFromInt(std.http.Method.parse(method_str));
-    const query = try http.parseQuery(query_raw, allocator);
-    const headers = try http.parseCgiHeaders(allocator);
-    var cookies = std.StringHashMap([]const u8).init(allocator);
-    defer cookies.deinit();
-    const cookie_headers_result = headers.getAll("Cookie");
-    if (cookie_headers_result) |cookie_headers| {
-        defer cookie_headers.deinit();
-
-        for (cookie_headers.items) |cookie_header| {
-            try http.parseCookie(&cookies, cookie_header);
-        }
-    } else |err| {
-        std.debug.print("Could not get cookie headers: {any}\n", .{err});
-    }
-
-    //-- Parse POST - application/x-www-form-urlencoded
-    var body = std.StringHashMap([]const u8).init(allocator);
-    defer body.deinit();
-
-    if (method == .POST and content_length > 0 and std.ascii.startsWithIgnoreCase(content_type, "application/x-www-form-urlencoded")) {
-        const body_buffer = try allocator.alloc(u8, content_length);
-        defer allocator.free(body_buffer);
-
-        const stdin = std.io.getStdIn().reader();
-        _ = try stdin.readAll(body_buffer);
-
-        body.deinit(); // Clean up previous StringHashMap
-
-        body = try http.parseQuery(body_buffer, allocator);
-    }
-
-    var res = http.Response.init(allocator);
-    defer res.deinit();
-
     var router = http.RouteSet{ .routes = route_list };
-    const ctx = Context{ .allocator = gpa_allocator, .db = null, .config = &config };
-    defer ctx.deinit();
-    var req = http.Request{ .method = method, .path = path, .query = query, .headers = headers, .cookies = cookies, .body = body };
 
-    if (!try router.handle(&req, &res, @constCast(&ctx))) {
-        try res.writer().print("404 Not Found: {s}\n", .{path});
+    if (buildConfig.IS_FCGI == 1) {
+        std.debug.print("FastCGI application started.\n", .{});
+        var app_context = Context{ .allocator = allocator, .db = null, .config = &config };
+
+        var request: fcgi.FCGX_Request = undefined;
+        _ = fcgi.FCGX_InitRequest(&request, 0, 0);
+        defer fcgi.FCGX_Free(&request, 0);
+
+        while (fcgi.FCGX_Accept_r(&request) >= 0) {
+            var fcgi_arena = std.heap.ArenaAllocator.init(gpa.allocator());
+            defer fcgi_arena.deinit();
+
+            const io = cgi.IOProvider{ .fcgi = &request };
+
+            try handleRequest(fcgi_arena.allocator(), &router, &app_context, io) catch |err| {
+                std.debug.print("Request failed: {any}\n", .{err});
+                io.finish();
+            };
+        }
+    } else {
+        var app_context = Context{ .allocator = allocator, .db = null, .config = &config };
+
+        const io = cgi.IOProvider{ .cgi = {} };
+
+        try handleRequest(allocator, &router, &app_context, io);
     }
-
-    std.debug.print("Response Completed, sending now\n", .{});
-
-    try res.send();
 }
 
 const testing = std.testing;
